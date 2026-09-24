@@ -1,11 +1,12 @@
 <!DOCTYPE html>
 <html>
   <head>
-    <!-- Hello Spider v4: rigged spider that scuttles in, breathes, chews, twitches.
-         spider-v4.glb must sit next to this file. Add ?debug to the URL for a status line. -->
+    <!-- Scan and Scream, Chapter 2: Don't Look Behind You.
+         Needs spider-v4.glb next to this file. Add ?debug to the URL for a status line. -->
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Hello Spider</title>
+    <title>Scan and Scream</title>
+    <link href="https://fonts.googleapis.com/css2?family=Creepster&display=swap" rel="stylesheet">
     <script type="importmap">
       {
         "imports": {
@@ -16,119 +17,255 @@
       }
     </script>
     <script type="module" src="https://cdn.jsdelivr.net/npm/@needle-tools/facefilter/dist/facefilter.min.js"></script>
+    <style>
+      .ui { position: fixed; z-index: 10000; font-family: Creepster, Impact, sans-serif; }
+      /* ghostly glow around the edges: doubles as a ring light on the visitor's face */
+      #frame { position: fixed; inset: 0; z-index: 9999; pointer-events: none;
+               box-shadow: inset 0 0 70px 34px rgba(225, 235, 255, 0.85); }
+      #caption { top: 12%; left: 0; right: 0; text-align: center; color: #ff2a1a; font-size: 9vw;
+                 text-shadow: 0 0 12px #000, 0 0 4px #000; opacity: 0; transition: opacity 0.6s; pointer-events: none; }
+      #caption.on { opacity: 1; }
+      #curse { bottom: 7%; left: 50%; transform: translateX(-50%); padding: 14px 26px; font-size: 7vw;
+               color: #fff; background: #5b0a0a; border: 2px solid #ff2a1a; border-radius: 40px;
+               box-shadow: 0 0 18px #ff2a1a; opacity: 0; transition: opacity 0.8s; pointer-events: none; }
+      #curse.on { opacity: 1; pointer-events: auto; }
+      #preview { inset: 0; background: rgba(0,0,0,0.92); display: none; flex-direction: column;
+                 align-items: center; justify-content: center; gap: 14px; padding: 16px; }
+      #preview.on { display: flex; }
+      #preview img { max-width: 92%; max-height: 68vh; border: 3px solid #ff2a1a; border-radius: 10px; }
+      #preview .row { display: flex; gap: 12px; }
+      #preview button { font-family: inherit; font-size: 6vw; padding: 10px 22px; border-radius: 30px;
+                        border: 2px solid #ff2a1a; background: #5b0a0a; color: #fff; }
+      #preview p { color: #ddd; font-family: system-ui, sans-serif; font-size: 15px; margin: 0; }
+      #dbg { left: 8px; bottom: 8px; color: #0f0; font: 13px monospace; background: #000a; padding: 4px 8px; }
+    </style>
   </head>
   <body style="margin:0; padding:0; background:#000;">
-    <!--
-      TUNING KNOBS:
-        face-filter-scale  : bigger number = bigger spider.
-        face-filter-offset : "x, y, z" in meters. y = up the head. z = toward (+) / away (-) from camera.
-                             Negative z pushes the body inside the head and hides it.
-    -->
     <needle-engine
       face-filter="./spider-v4.glb"
       face-filter-scale="0.85"
       face-filter-offset="0, 0.1, 0.01">
     </needle-engine>
 
+    <div id="frame"></div>
+    <div id="caption" class="ui">don't look behind you...</div>
+    <button id="curse" class="ui">Take the curse home</button>
+    <div id="preview" class="ui">
+      <img id="shot" alt="Your cursed photo">
+      <div class="row"><button id="share">Share</button><button id="close">Close</button></div>
+      <p id="hint">Press and hold the photo to save it.</p>
+    </div>
+
     <script type="module">
       import { onStart } from "@needle-tools/engine";
-      import { Quaternion, Vector3 } from "three";
+      import { Quaternion, Vector3, Group } from "three";
 
-      // ---- settings you can play with ----
-      const ENTRANCE_SECONDS = 1.6;   // scuttle-in time
-      const ENTRANCE_DISTANCE = 0.35; // meters: how far off to the side she starts
-      const BREATH_SECONDS = 2.4;     // one breath
-      const CHEW_EVERY = 3.5;         // seconds between fang bursts
-      // -------------------------------------
+      // ================= SETTINGS YOU CAN PLAY WITH =================
+      const S = {
+        ENTRANCE_SECONDS: 1.6,  ENTRANCE_DISTANCE: 0.35,     // little spider scuttle-in
+        BREATH_SECONDS: 2.4,    CHEW_EVERY: 3.5,
+        CYCLE_START: 3.0,       CYCLE_SECONDS: 18,           // scare cycle starts 3 s after a face appears, repeats
+        EYES_POS: [0.16, -0.14, -0.10], EYES_SCALE: 3.2,     // glowing eyes over the shoulder (x, y, z)
+        GIANT_SCALE: 3.2,                                    // how big the giant is vs. the little one
+        GIANT_PEEK: [0, -0.12, -0.16],                       // where the giant stops, behind the head
+        GIANT_FROM_Y: 0.45,                                  // where it descends from (above the frame)
+        GIANT_TILT: 0.3,                                     // radians: leans forward to look down at you
+        CURSE_BUTTON_AT: 7.5,                                // seconds after the face appears
+      };
+      // Cycle timeline (seconds into each cycle):
+      //   0-3 eyes open, blink, close | 3-4.5 giant descends | 4.5-10 giant lurks | 10-11.5 giant leaves
+      // ===============================================================
 
+      const $ = id => document.getElementById(id);
       const debug = new URLSearchParams(location.search).has("debug");
       let dbg = null;
-      if (debug) {
-        dbg = document.createElement("div");
-        dbg.style.cssText = "position:fixed;left:8px;bottom:8px;z-index:9999;color:#0f0;font:14px monospace;background:#000a;padding:4px 8px;";
-        document.body.appendChild(dbg);
-      }
+      if (debug) { dbg = document.createElement("div"); dbg.id = "dbg"; dbg.className = "ui"; document.body.appendChild(dbg); }
       const log = t => { if (dbg) dbg.textContent = t; };
 
       const X = new Vector3(1, 0, 0), Y = new Vector3(0, 1, 0), Z = new Vector3(0, 0, 1);
-      const qTmp = new Quaternion();
-      const turn = (part, axis, angle) => part.o.quaternion.copy(part.q).multiply(qTmp.setFromAxisAngle(axis, angle));
+      const qA = new Quaternion(), qB = new Quaternion();
+      const turn = (part, axis, angle) => part.o.quaternion.copy(part.q).multiply(qA.setFromAxisAngle(axis, angle));
       const smooth = x => { x = Math.min(1, Math.max(0, x)); return x * x * (3 - 2 * x); };
       const shown = o => { for (; o; o = o.parent) if (!o.visible) return false; return true; };
 
       const LEGS = ["LegL0", "LegL1", "LegL2", "LegL3", "LegR0", "LegR1", "LegR2", "LegR3"];
-      const GAIT_A = new Set(["LegL0", "LegR1", "LegL2", "LegR3"]); // alternating tetrapod gait
+      const GAIT_A = new Set(["LegL0", "LegR1", "LegL2", "LegR3"]);
+
+      // Collect named parts; rest poses come from `restFrom` (the original rig) so clones start clean.
+      function collect(root, restFrom) {
+        const get = n => {
+          const o = n === "SpiderRig" ? root : root.getObjectByName(n);
+          if (!o) return null;
+          const src = restFrom ? restFrom[n] : o;
+          return { o, q: src.quaternion ? src.quaternion.clone() : src.q.clone(),
+                      p: src.position ? src.position.clone() : src.p.clone(),
+                      s: src.scale ? src.scale.clone() : src.s.clone() };
+        };
+        const r = { SpiderRig: get("SpiderRig"), Torso: get("Torso"), Abdomen: get("Abdomen"),
+                    FangL: get("FangL"), FangR: get("FangR") };
+        LEGS.forEach(n => r[n] = get(n));
+        const ok = r.Torso && r.Abdomen && LEGS.every(n => r[n]);
+        return ok ? r : null;
+      }
+
+      // Breathing, chewing, leg motion. `st` holds per-spider twitch state.
+      function animateBody(r, st, t, mode) {
+        const b = Math.sin(2 * Math.PI * t / S.BREATH_SECONDS);
+        r.Abdomen.o.scale.set(r.Abdomen.s.x * (1 + 0.02 * b), r.Abdomen.s.y * (1 + 0.04 * b), r.Abdomen.s.z * (1 + 0.04 * b));
+        r.Torso.o.position.y = r.Torso.p.y + 0.0012 * Math.sin(2 * Math.PI * t / S.BREATH_SECONDS + 1);
+        const c = (t + st.chewOffset) % S.CHEW_EVERY;
+        const chew = c < 0.7 ? 0.35 * Math.sin(2 * Math.PI * 7 * c) * Math.sin(Math.PI * c / 0.7) : 0;
+        if (r.FangL) turn(r.FangL, X, chew);
+        if (r.FangR) turn(r.FangR, X, -chew);
+        if (mode === "idle" && t > st.nextTwitch) {
+          st.leg = LEGS[Math.floor(Math.random() * 8)]; st.start = t; st.nextTwitch = t + 0.8 + Math.random() * 1.6;
+        }
+        LEGS.forEach((n, i) => {
+          let lift;
+          if (mode === "walk") lift = 0.45 * Math.max(0, Math.sin(2 * Math.PI * 9 * t + (GAIT_A.has(n) ? 0 : Math.PI)));
+          else if (mode === "flail") lift = 0.3 * Math.sin(2 * Math.PI * 3 * t + i);
+          else {
+            lift = 0.03 * Math.sin(1.3 * t + i);
+            const tw = t - st.start;
+            if (n === st.leg && tw < 0.28) lift += 0.5 * Math.sin(Math.PI * tw / 0.28);
+          }
+          turn(r[n], Z, lift);
+        });
+      }
+
+      // Eye openness over the 0-3 s window: open, hold, blink, hold, close.
+      function eyeOpen(c) {
+        if (c < 0 || c > 3) return 0;
+        if (c < 0.3) return c / 0.3;
+        if (c > 1.8 && c < 2.0) return Math.abs(c - 1.9) / 0.1;
+        if (c > 2.7) return (3 - c) / 0.3;
+        return 1;
+      }
 
       onStart(context => {
-        let rig = null, wasShown = false, entranceStart = -99;
-        let twitchLeg = null, twitchStart = -99, nextTwitch = 0;
+        let small = null, giant = null, eyes = null, wasShown = false, start = -99;
+        const stSmall = { nextTwitch: 0, leg: null, start: -99, chewOffset: 0 };
+        const stGiant = { nextTwitch: 0, leg: null, start: -99, chewOffset: 1.3 };
 
-        function grab() {
+        function build() {
           const root = context.scene.getObjectByName("SpiderRig");
-          if (!root) return null;
-          const get = n => {
-            const o = n === "SpiderRig" ? root : root.getObjectByName(n);
-            return o ? { o, q: o.quaternion.clone(), p: o.position.clone(), s: o.scale.clone() } : null;
-          };
-          const r = { root: get("SpiderRig"), torso: get("Torso"), abdomen: get("Abdomen"),
-                      fangL: get("FangL"), fangR: get("FangR"), legs: LEGS.map(get) };
-          return r.torso && r.abdomen && r.legs.every(Boolean) ? r : null;
+          if (!root) return false;
+          small = collect(root, null);
+          if (!small) return false;
+          const rest = {};
+          for (const k in small) rest[k] = small[k];
+
+          // Giant: a clone that shares the little spider's geometry and materials
+          const gRoot = root.clone(true);
+          gRoot.name = "GiantRig";
+          root.parent.add(gRoot);
+          giant = collect(gRoot, rest);
+          gRoot.scale.setScalar(S.GIANT_SCALE);
+          gRoot.visible = false;
+
+          // Shoulder eyes: a clone of the eye cluster only
+          const eyeMesh = root.getObjectByName("Torso_eye");
+          if (eyeMesh) {
+            eyes = new Group();
+            eyes.add(eyeMesh.clone(true));
+            eyes.position.set(...S.EYES_POS);
+            eyes.visible = false;
+            root.parent.add(eyes);
+          }
+          return true;
         }
 
         function tick() {
           requestAnimationFrame(tick);
           const t = performance.now() / 1000;
-          if (!rig) { rig = grab(); log(rig ? "rig found" : "waiting for spider..."); if (!rig) return; }
+          if (!small && !build()) { log("waiting for spider..."); return; }
 
-          // restart the scuttle whenever she (re)appears on a face
-          const isShown = shown(rig.root.o);
-          if (isShown && !wasShown) entranceStart = t;
+          const isShown = shown(small.SpiderRig.o);
+          if (isShown && !wasShown) start = t;           // face found: restart the show
           wasShown = isShown;
+          const since = t - start;
 
-          const u = (t - entranceStart) / ENTRANCE_SECONDS;
-          const walking = u < 1;
+          // --- little spider: scuttle in, then live on your head
+          const u = since / S.ENTRANCE_SECONDS, walking = u < 1;
+          const R = small.SpiderRig;
+          R.o.position.set(R.p.x + (walking ? S.ENTRANCE_DISTANCE * (1 - smooth(u)) : 0), R.p.y, R.p.z);
+          turn(R, Y, walking ? -Math.PI / 2 * (1 - smooth((u - 0.7) / 0.3)) : 0);
+          animateBody(small, stSmall, t, walking ? "walk" : "idle");
 
-          // root: slide in from the side, facing her direction of travel, then turn to the camera
-          const slide = walking ? ENTRANCE_DISTANCE * (1 - smooth(u)) : 0;
-          rig.root.o.position.set(rig.root.p.x + slide, rig.root.p.y, rig.root.p.z);
-          const yaw = walking ? -Math.PI / 2 * (1 - smooth((u - 0.7) / 0.3)) : 0;
-          turn(rig.root, Y, yaw);
-
-          // breathing: abdomen swells, torso bobs
-          const b = Math.sin(2 * Math.PI * t / BREATH_SECONDS);
-          rig.abdomen.o.scale.set(rig.abdomen.s.x * (1 + 0.02 * b), rig.abdomen.s.y * (1 + 0.04 * b), rig.abdomen.s.z * (1 + 0.04 * b));
-          rig.torso.o.position.y = rig.torso.p.y + 0.0012 * Math.sin(2 * Math.PI * t / BREATH_SECONDS + 1);
-
-          // fangs: short chewing bursts
-          const c = t % CHEW_EVERY;
-          const chew = c < 0.7 ? 0.35 * Math.sin(2 * Math.PI * 7 * c) * Math.sin(Math.PI * c / 0.7) : 0;
-          if (rig.fangL) turn(rig.fangL, X, chew);
-          if (rig.fangR) turn(rig.fangR, X, -chew);
-
-          // legs: fast gait while walking; idle sway plus a random twitch
-          if (!walking && t > nextTwitch) {
-            twitchLeg = LEGS[Math.floor(Math.random() * LEGS.length)];
-            twitchStart = t; nextTwitch = t + 0.8 + Math.random() * 1.6;
+          // --- scare cycle
+          const c = since < S.CYCLE_START ? -1 : (since - S.CYCLE_START) % S.CYCLE_SECONDS;
+          const open = eyeOpen(c);
+          if (eyes) {
+            eyes.visible = isShown && open > 0.01;
+            eyes.scale.set(S.EYES_SCALE, S.EYES_SCALE * Math.max(open, 0.01), S.EYES_SCALE);
           }
-          rig.legs.forEach((leg, i) => {
-            const name = LEGS[i];
-            let lift;
-            if (walking) {
-              lift = 0.45 * Math.max(0, Math.sin(2 * Math.PI * 9 * t + (GAIT_A.has(name) ? 0 : Math.PI)));
-            } else {
-              lift = 0.03 * Math.sin(1.3 * t + i);
-              const tw = t - twitchStart;
-              if (name === twitchLeg && tw < 0.28) lift += 0.5 * Math.sin(Math.PI * tw / 0.28);
-            }
-            turn(leg, Z, lift);
-          });
+          $("caption").classList.toggle("on", isShown && c >= 0 && c < 4.5);
 
-          if (debug) log(`rig ok | shown=${isShown} | ${walking ? "scuttling" : "idle"}`);
+          const G = giant.SpiderRig;
+          let gy = null, gmode = "idle";
+          if (c >= 3 && c < 4.5)        { gy = S.GIANT_FROM_Y + (S.GIANT_PEEK[1] - S.GIANT_FROM_Y) * smooth((c - 3) / 1.5); gmode = "flail"; }
+          else if (c >= 4.5 && c < 10)  { gy = S.GIANT_PEEK[1]; }
+          else if (c >= 10 && c < 11.5) { gy = S.GIANT_PEEK[1] + (S.GIANT_FROM_Y - S.GIANT_PEEK[1]) * smooth((c - 10) / 1.5); gmode = "flail"; }
+          G.o.visible = isShown && gy !== null;
+          if (G.o.visible) {
+            G.o.position.set(S.GIANT_PEEK[0], gy, S.GIANT_PEEK[2]);
+            G.o.quaternion.copy(G.q).multiply(qB.setFromAxisAngle(X, S.GIANT_TILT));
+            animateBody(giant, stGiant, t, gmode);
+          }
+
+          $("curse").classList.toggle("on", isShown && since > S.CURSE_BUTTON_AT);
+          if (debug) log(`ok | shown=${isShown} | t=${since.toFixed(1)} | cycle=${c.toFixed(1)} | ${walking ? "scuttle" : "idle"}`);
         }
         requestAnimationFrame(tick);
 
-        // tap anywhere to replay the scuttle
-        window.addEventListener("pointerdown", () => { entranceStart = performance.now() / 1000; });
+        // tap the scene (not the buttons) to replay from the scuttle
+        window.addEventListener("pointerdown", e => {
+          if (e.target.closest && e.target.closest(".ui")) return;
+          start = performance.now() / 1000;
+        });
+
+        // ---------- Take the curse home ----------
+        function snap() {
+          const gl = (context.renderer && context.renderer.domElement) || document.querySelector("needle-engine canvas");
+          if (context.renderer && context.mainCamera) context.renderer.render(context.scene, context.mainCamera);
+          const W = gl.width, H = gl.height;
+          const cv = document.createElement("canvas"); cv.width = W; cv.height = H;
+          const g = cv.getContext("2d");
+          const v = document.querySelector("video");
+          if (v && v.videoWidth) {  // in case the camera feed sits behind a transparent canvas
+            const k = Math.max(W / v.videoWidth, H / v.videoHeight), w = v.videoWidth * k, h = v.videoHeight * k;
+            g.save(); g.translate(W, 0); g.scale(-1, 1); g.drawImage(v, (W - w) / 2, (H - h) / 2, w, h); g.restore();
+          }
+          g.drawImage(gl, 0, 0, W, H);
+          const fs = Math.round(W * 0.075);
+          g.font = `${fs}px Creepster, Impact, sans-serif`; g.textAlign = "center";
+          g.shadowColor = "#000"; g.shadowBlur = fs * 0.35; g.fillStyle = "#ff2a1a";
+          g.fillText("SCAN AND SCREAM", W / 2, H - fs * 0.9);
+          return cv.toDataURL("image/jpeg", 0.92);
+        }
+        function toFile(dataURL) {
+          const bin = atob(dataURL.split(",")[1]); const a = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i);
+          return new File([a], "scan-and-scream.jpg", { type: "image/jpeg" });
+        }
+        let lastShot = null;
+        $("curse").addEventListener("click", () => {
+          try {
+            lastShot = snap();
+            $("shot").src = lastShot;
+            $("preview").classList.add("on");
+          } catch (err) { log("photo failed: " + err.message); }
+        });
+        $("share").addEventListener("click", () => {
+          if (!lastShot) return;
+          const f = toFile(lastShot);
+          if (navigator.canShare && navigator.canShare({ files: [f] })) {
+            navigator.share({ files: [f], title: "Scan and Scream" }).catch(() => {});
+          } else {
+            $("hint").textContent = "Sharing isn't available here. Press and hold the photo to save it.";
+          }
+        });
+        $("close").addEventListener("click", () => $("preview").classList.remove("on"));
       });
     </script>
   </body>
