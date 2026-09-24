@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
   <head>
-    <!-- Scan and Scream, Chapter 2.5: eyes, giant, rappel, web, babies.
+    <!-- Scan and Scream: eyes, giant, rappel, web, babies, and you become the spider.
          Needs spider-v4.glb next to this file. Add ?debug to the URL for a status line. -->
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -74,22 +74,24 @@
       // ================= SETTINGS YOU CAN PLAY WITH =================
       // Positions are x, y, z in head space: y = up, z = toward the camera.
       const S = {
-        SMALL_SCALE: 0.75,                                 // the little spider on your head
+        SMALL_SCALE: 0.55,                                 // the little spider on your head
         ENTRANCE_SECONDS: 1.6,  ENTRANCE_DISTANCE: 0.35,
         BREATH_SECONDS: 2.4,    CHEW_EVERY: 3.5,
-        CYCLE_START: 3.0,       CYCLE_SECONDS: 18,
+        CYCLE_START: 3.0,       CYCLE_SECONDS: 24.5,
         GIANT_SCALE: 3.2,  GIANT_PEEK: [0, -0.12, -0.16],  GIANT_RISE: 0.12,  GIANT_TILT: 0.3,
         EYES_RISE: 0.12,
         WEB_POS: [0, -0.17, 0.11],  WEB_RADIUS: 0.09,
         BABIES: 5,  BABY_SIZE: [0.2, 0.3],                 // random size range per baby
         BABY_ZONE: { x: 0, y: -0.12, rx: 0.09, ry: 0.13 }, // oval on your face/head they must stay inside
         BABY_SPEED: [0.05, 0.11],                          // meters/second while darting
+        YOU_SCALE: 2.4,  YOU_POS: [0, -0.36, -0.03],       // finale: your head on a spider body (legs under your chin)
         CURSE_BUTTON_AT: 7.5,
-        CAPTIONS: [[0, 4.5, "don't look behind you..."], [10.5, 13, "they're hatching..."]],
+        CAPTIONS: [[0, 4.5, "don't look behind you..."], [10.5, 13, "they're hatching..."], [18.5, 23.5, "you're one of us now..."]],
         VOLUME: 0.9,
       };
       //   0-3 eyes | 3-4.2 giant rises | 4.5-7.5 rappel | 7.5-10.5 web | 10.5-17.5 babies roam
       //   12.5-13.7 giant sinks | 13-15.5 mom climbs up | 16.5-17.5 babies hide in your hair
+      //   18-18.8 legs burst from under your chin | 18.8-23.5 you ARE the spider | 23.5-24.3 legs retract
       // ===============================================================
 
       const $ = id => document.getElementById(id);
@@ -275,9 +277,9 @@
       }
 
       onStart(context => {
-        let small = null, giant = null, eyes = null, babies = [], web = null, thread = null;
+        let small = null, giant = null, you = null, eyes = null, babies = [], web = null, thread = null;
         let wasShown = false, start = -99, lastT = performance.now() / 1000, prevC = -1, prevSince = -1;
-        const stSmall = newState(0), stGiant = newState(1.3);
+        const stSmall = newState(0), stGiant = newState(1.3), stYou = newState(2.1);
         let eyesHome = null;
 
         function build() {
@@ -290,6 +292,13 @@
 
           const g = root.clone(true); g.name = "GiantRig"; parent.add(g);
           giant = collect(g, rest); g.scale.setScalar(S.GIANT_SCALE); g.visible = false;
+
+          // Spider-you: a clone with its head parts hidden, so YOUR head becomes the spider's head
+          const y = root.clone(true); y.name = "YouRig"; parent.add(y); y.visible = false;
+          you = collect(y, rest);
+          ["Torso_body", "Torso_bristle", "Torso_eye", "FangL", "FangR"].forEach(n => {
+            const o = y.getObjectByName(n); if (o) o.visible = false;
+          });
 
           const eyeMesh = root.getObjectByName("Torso_eye");
           if (eyeMesh) {
@@ -331,6 +340,8 @@
           if (hit(4.6))  play("heartbeat", 8);
           if (hit(10.5)) play("skitter", 3, 1.6);
           if (hit(16.5)) play("skitter", 1, 1.2);
+          if (hit(18))   { play("stinger"); play("skitter", 1.2, 2); }
+          if (hit(23.5)) play("skitter", 0.8, 1.5);
           prevSince = since;
 
           // ---------- little spider ----------
@@ -404,6 +415,21 @@
             G.o.position.set(S.GIANT_PEEK[0], S.GIANT_PEEK[1] + gy, S.GIANT_PEEK[2]);
             G.o.quaternion.copy(G.q).multiply(qTilt);
             animateBody(giant, stGiant, t, gmode);
+          }
+
+          // ---------- finale: you are the spider ----------
+          if (you) {
+            const Yr = you.SpiderRig;
+            let grow = 0, ymode = "idle";
+            if (within(c, 18, 18.8))        { grow = smooth((c - 18) / 0.8); ymode = "flail"; }
+            else if (within(c, 18.8, 23.5)) { grow = 1; }
+            else if (within(c, 23.5, 24.3)) { grow = 1 - smooth((c - 23.5) / 0.8); ymode = "flail"; }
+            Yr.o.visible = isShown && grow > 0.01;
+            if (Yr.o.visible) {
+              Yr.o.position.set(...S.YOU_POS);
+              Yr.o.scale.setScalar(S.YOU_SCALE * Math.max(grow, 0.01));
+              animateBody(you, stYou, t, ymode);
+            }
           }
 
           const cap = isShown ? S.CAPTIONS.find(([a, b]) => within(c, a, b)) : null;
