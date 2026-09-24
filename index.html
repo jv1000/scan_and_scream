@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <!-- Test 1: the official 2D template mask. If this tracks your face, the pipeline works. -->
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Hello Spider - pipeline test</title>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/@needle-tools/engine@4.4.0-alpha.5/dist/three.min.js",
+          "@needle-tools/engine": "https://cdn.jsdelivr.net/npm/@needle-tools/engine@4.4.0-alpha.5/dist/needle-engine.min.js",
+          "@needle-tools/facefilter": "https://cdn.jsdelivr.net/npm/@needle-tools/facefilter/dist/facefilter.min.js"
+        }
+      }
+    </script>
+    <script type="module" src="https://cdn.jsdelivr.net/npm/@needle-tools/facefilter/dist/facefilter.min.js"></script>
+  </head>
+  <body style="margin:0; padding:0;">
+    <needle-engine
+      background-color="#ffffdd"
+      face-filter="https://cdn.needle.tools/static/facefilter/facemask-template-procreate.webp"
+      face-filter-mask="https://cdn.needle.tools/static/facefilter/facemask-occlusion-procreate.webp"
+      face-filter-layout="procreate">
+    </needle-engine>
+  </body>
+</html>

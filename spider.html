@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <!-- Test 2: Hello Spider. spider.glb must sit next to this file. -->
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Hello Spider</title>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/@needle-tools/engine@4.4.0-alpha.5/dist/three.min.js",
+          "@needle-tools/engine": "https://cdn.jsdelivr.net/npm/@needle-tools/engine@4.4.0-alpha.5/dist/needle-engine.min.js",
+          "@needle-tools/facefilter": "https://cdn.jsdelivr.net/npm/@needle-tools/facefilter/dist/facefilter.min.js"
+        }
+      }
+    </script>
+    <script type="module" src="https://cdn.jsdelivr.net/npm/@needle-tools/facefilter/dist/facefilter.min.js"></script>
+  </head>
+  <body style="margin:0; padding:0; background:#000;">
+    <!--
+      TUNING KNOBS (the only two lines you should need to touch):
+        face-filter-scale  : bigger number = bigger spider. Start at 1.
+        face-filter-offset : "x, y, z" in meters. y raises it toward the top of the head,
+                             z moves it toward (+) or away from (-) the camera.
+    -->
+    <needle-engine
+      face-filter="./spider.glb"
+      face-filter-scale="1"
+      face-filter-offset="0, 0.1, 0">
+    </needle-engine>
+  </body>
+</html>
