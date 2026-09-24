@@ -74,13 +74,15 @@
       // ================= SETTINGS YOU CAN PLAY WITH =================
       // Positions are x, y, z in head space: y = up, z = toward the camera.
       const S = {
-        SMALL_SCALE: 0.65,                                 // the little spider on your head
+        SMALL_SCALE: 0.55,                                 // the little spider on your head
         ENTRANCE_SECONDS: 1.6,  ENTRANCE_DISTANCE: 0.35,
         BREATH_SECONDS: 2.4,    CHEW_EVERY: 3.5,
         CYCLE_START: 3.0,       CYCLE_SECONDS: 24.5,
         GIANT_SCALE: 3.2,  GIANT_PEEK: [0, -0.12, -0.16],  GIANT_RISE: 0.12,  GIANT_TILT: 0.3,
         EYES_RISE: 0.12,
-        WEB_POS: [0, -0.17, 0.11],  WEB_RADIUS: 0.09,
+        WEB_POS: [0, -0.17, 0.09],  WEB_RADIUS: 0.09,       // last number = face depth (toward camera)
+        FACE_CURVE: 4,                                     // how sharply the face curves away (web + babies wrap it)
+        MOM_OFFSET: [0, 0, 0],                             // nudge mom's resting spot: [x, up, toward camera]
         BABIES: 5,  BABY_SIZE: [0.2, 0.3],                 // random size range per baby
         BABY_ZONE: { x: 0, y: -0.12, rx: 0.09, ry: 0.13 }, // oval on your face/head they must stay inside
         BABY_SPEED: [0.05, 0.11],                          // meters/second while darting
@@ -95,7 +97,10 @@
       // ===============================================================
 
       const $ = id => document.getElementById(id);
-      const debug = new URLSearchParams(location.search).has("debug");
+      const params = new URLSearchParams(location.search);
+      const debug = params.has("debug"), tuneMode = params.has("tune");
+      const AT = params.has("at") ? parseFloat(params.get("at")) : null;   // e.g. ?at=8 jumps to the web
+      const TIME = { frozenAt: null, jumpTo: null };
       let dbg = null;
       if (debug) { dbg = document.createElement("div"); dbg.id = "dbg"; dbg.className = "ui"; document.body.appendChild(dbg); }
       const log = t => { if (dbg) dbg.textContent = t; };
@@ -172,7 +177,8 @@
       const shown = o => { for (; o; o = o.parent) if (!o.visible) return false; return true; };
       const v3 = a => new Vector3(...a);
       // gently curved face surface so babies hug the face instead of floating in a flat plane
-      const faceZ = (x, y) => S.WEB_POS[2] - 1.5 * x * x - 1.0 * (y - S.WEB_POS[1]) ** 2;
+      const curveZ = (dx, dy) => S.FACE_CURVE * dx * dx + S.FACE_CURVE * 0.4 * dy * dy;
+      const faceZ = (x, y) => S.WEB_POS[2] - curveZ(x - S.WEB_POS[0], y - S.WEB_POS[1]);
 
       const LEGS = ["LegL0", "LegL1", "LegL2", "LegL3", "LegR0", "LegR1", "LegR2", "LegR3"];
       const GAIT_A = new Set(["LegL0", "LegR1", "LegL2", "LegR3"]);
@@ -230,8 +236,9 @@
         const quad = (a, b) => {
           const dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy) || 1;
           const nx = -dy / L * w / 2, ny = dx / L * w / 2;
-          pos.push(a.x + nx, a.y + ny, 0, a.x - nx, a.y - ny, 0, b.x + nx, b.y + ny, 0,
-                   b.x + nx, b.y + ny, 0, a.x - nx, a.y - ny, 0, b.x - nx, b.y - ny, 0);
+          const v = (x, y) => [x, y, -curveZ(x, y)];     // bend each corner back to follow the face
+          pos.push(...v(a.x + nx, a.y + ny), ...v(a.x - nx, a.y - ny), ...v(b.x + nx, b.y + ny),
+                   ...v(b.x + nx, b.y + ny), ...v(a.x - nx, a.y - ny), ...v(b.x - nx, b.y - ny));
         };
         const P = (r, k) => { const a = 2 * Math.PI * k / spokes; return { x: r * Math.cos(a), y: r * Math.sin(a) }; };
         for (let k = 0; k < spokes; k++) quad(P(radius * 0.05, k), P(radius * (0.92 + 0.08 * Math.sin(k * 3.1)), k));
@@ -326,8 +333,10 @@
           if (!small && !build()) { log("waiting for spider..."); return; }
 
           const isShown = shown(small.SpiderRig.o);
-          if (isShown && !wasShown) start = t;
+          if (isShown && !wasShown) start = AT !== null ? t - (S.CYCLE_START + AT) : t;
           wasShown = isShown;
+          if (TIME.jumpTo !== null) { start = t - (S.CYCLE_START + TIME.jumpTo); prevC = TIME.jumpTo; prevSince = 99; TIME.jumpTo = null; }
+          if (TIME.frozenAt !== null) { start = t - (S.CYCLE_START + TIME.frozenAt); prevC = TIME.frozenAt; }
           const since = t - start;
           const c = since < S.CYCLE_START ? -1 : (since - S.CYCLE_START) % S.CYCLE_SECONDS;
           if (c < prevC) prevC = -1;                                   // new cycle
@@ -345,7 +354,7 @@
           prevSince = since;
 
           // ---------- little spider ----------
-          const R = small.SpiderRig, home = R.p, webP = v3(S.WEB_POS);
+          const R = small.SpiderRig, home = R.p.clone().add(v3(S.MOM_OFFSET)), webP = v3(S.WEB_POS);
           const u = since / S.ENTRANCE_SECONDS, walking = u < 1;
           let pos = home.clone(), hang = 0, mode = walking ? "walk" : "idle", yaw = 0;
           if (walking) {
@@ -365,7 +374,7 @@
           const threadOn = isShown && within(c, 4.5, 15.5);
           thread.visible = threadOn;
           if (threadOn) {
-            const top = home.clone().add(new Vector3(0, 0.005, 0.06)), dir = pos.clone().sub(top);
+            const top = home.clone().add(new Vector3(0, 0.005, 0.04)), dir = pos.clone().sub(top);
             thread.position.copy(top); thread.scale.set(1, Math.max(dir.length(), 0.001), 1);
             thread.quaternion.setFromUnitVectors(Y, dir.normalize());
           }
@@ -374,6 +383,7 @@
           const webOn = isShown && within(c, 7.5, 14.5);
           web.visible = webOn;
           if (webOn) {
+            web.position.set(...S.WEB_POS);
             web.geometry.setDrawRange(0, Math.ceil(smooth((c - 7.5) / 3) * web.userData.segments) * 6);
             web.material.opacity = 0.9 * (1 - smooth((c - 13) / 1.5));
           }
@@ -441,6 +451,59 @@
         }
         requestAnimationFrame(tick);
 
+        // ---------- ?tune panel: live sliders, freeze, jump, copy ----------
+        if (tuneMode) {
+          const P = document.createElement("div");
+          P.className = "ui";
+          P.style.cssText = "left:0;right:0;bottom:0;background:#000c;color:#fff;font:13px system-ui;padding:8px 12px 14px;";
+          const rows = [
+            ["Mom size",       () => S.SMALL_SCALE,  v => S.SMALL_SCALE = v,  0.3, 1.0, 0.01],
+            ["Mom up/down",    () => S.MOM_OFFSET[1], v => S.MOM_OFFSET[1] = v, -0.06, 0.06, 0.002],
+            ["Mom depth",      () => S.MOM_OFFSET[2], v => S.MOM_OFFSET[2] = v, -0.06, 0.06, 0.002],
+            ["Face depth",     () => S.WEB_POS[2],   v => S.WEB_POS[2] = v,   0.03, 0.16, 0.002],
+            ["Face curve",     () => S.FACE_CURVE,   v => { S.FACE_CURVE = v; rebuildWeb(); }, 0, 10, 0.1],
+            ["Web up/down",    () => S.WEB_POS[1],   v => S.WEB_POS[1] = v,   -0.28, -0.06, 0.002],
+          ];
+          const out = document.createElement("pre");
+          out.style.cssText = "margin:6px 0 0;font:11px monospace;color:#0f0;white-space:pre-wrap;";
+          const settingsText = () =>
+            `SMALL_SCALE: ${S.SMALL_SCALE.toFixed(2)},\n` +
+            `WEB_POS: [0, ${S.WEB_POS[1].toFixed(3)}, ${S.WEB_POS[2].toFixed(3)}],\n` +
+            `FACE_CURVE: ${S.FACE_CURVE.toFixed(1)},\n` +
+            `MOM_OFFSET: [0, ${S.MOM_OFFSET[1].toFixed(3)}, ${S.MOM_OFFSET[2].toFixed(3)}],`;
+          const refresh = () => { out.textContent = settingsText(); };
+          rows.forEach(([label, get, set, min, max, step]) => {
+            const row = document.createElement("label");
+            row.style.cssText = "display:flex;align-items:center;gap:8px;margin:3px 0;";
+            const val = document.createElement("span"); val.style.cssText = "width:48px;text-align:right;font-family:monospace;";
+            const r = document.createElement("input");
+            Object.assign(r, { type: "range", min, max, step, value: get() }); r.style.flex = "1";
+            const name = document.createElement("span"); name.textContent = label; name.style.width = "92px";
+            const show = () => { val.textContent = (+r.value).toFixed(3); };
+            r.addEventListener("input", () => { set(+r.value); show(); refresh(); });
+            show(); row.append(name, r, val); P.append(row);
+          });
+          const bar = document.createElement("div"); bar.style.cssText = "display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;";
+          const btn = (label, fn) => { const b = document.createElement("button"); b.textContent = label;
+            b.style.cssText = "font:13px system-ui;padding:6px 10px;border-radius:14px;border:1px solid #888;background:#222;color:#fff;";
+            b.addEventListener("click", fn); bar.append(b); return b; };
+          [["Rappel", 6], ["Web", 10], ["Babies", 12], ["Giant", 6.5], ["Finale", 20]].forEach(([label, at]) =>
+            btn(label, () => { TIME.jumpTo = at; if (TIME.frozenAt !== null) TIME.frozenAt = at; }));
+          const fz = btn("Freeze", () => {
+            if (TIME.frozenAt === null) { const c = (performance.now() / 1000 - start - S.CYCLE_START) % S.CYCLE_SECONDS; TIME.frozenAt = Math.max(0, c); fz.textContent = "Unfreeze"; }
+            else { TIME.frozenAt = null; fz.textContent = "Freeze"; }
+          });
+          btn("Copy numbers", () => { navigator.clipboard && navigator.clipboard.writeText(settingsText()); });
+          btn("Hide", () => { P.style.display = "none"; });
+          P.append(bar, out); refresh(); document.body.append(P);
+        }
+        function rebuildWeb() {
+          if (!web) return;
+          const fresh = makeWeb(S.WEB_RADIUS);
+          web.geometry.dispose(); web.geometry = fresh.geometry;
+          web.userData.segments = fresh.userData.segments;
+        }
+
         // ---------- entry screen (unlocks sound), mute, tap to replay ----------
         $("start").addEventListener("click", () => {
           initAudio(); $("start").classList.add("off"); $("mute").classList.add("on");
@@ -452,6 +515,7 @@
         });
         window.addEventListener("pointerdown", e => {
           if (e.target.closest && e.target.closest(".ui")) return;
+          if (tuneMode) return;
           start = performance.now() / 1000; prevC = -1; prevSince = -1;
         });
 
