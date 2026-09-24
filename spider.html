@@ -1,7 +1,8 @@
 <!DOCTYPE html>
 <html>
   <head>
-    <!-- Test 2: Hello Spider. spider-v3.glb must sit next to this file. -->
+    <!-- Hello Spider v4: rigged spider that scuttles in, breathes, chews, twitches.
+         spider-v4.glb must sit next to this file. Add ?debug to the URL for a status line. -->
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Hello Spider</title>
@@ -18,15 +19,117 @@
   </head>
   <body style="margin:0; padding:0; background:#000;">
     <!--
-      TUNING KNOBS (the only two lines you should need to touch):
-        face-filter-scale  : bigger number = bigger spider. Start at 1.
-        face-filter-offset : "x, y, z" in meters. y raises it toward the top of the head,
-                             z moves it toward (+) or away from (-) the camera.
+      TUNING KNOBS:
+        face-filter-scale  : bigger number = bigger spider.
+        face-filter-offset : "x, y, z" in meters. y = up the head. z = toward (+) / away (-) from camera.
+                             Negative z pushes the body inside the head and hides it.
     -->
     <needle-engine
-      face-filter="./spider-v3.glb"
+      face-filter="./spider-v4.glb"
       face-filter-scale="0.85"
       face-filter-offset="0, 0.1, 0.01">
     </needle-engine>
+
+    <script type="module">
+      import { onStart } from "@needle-tools/engine";
+      import { Quaternion, Vector3 } from "three";
+
+      // ---- settings you can play with ----
+      const ENTRANCE_SECONDS = 1.6;   // scuttle-in time
+      const ENTRANCE_DISTANCE = 0.35; // meters: how far off to the side she starts
+      const BREATH_SECONDS = 2.4;     // one breath
+      const CHEW_EVERY = 3.5;         // seconds between fang bursts
+      // -------------------------------------
+
+      const debug = new URLSearchParams(location.search).has("debug");
+      let dbg = null;
+      if (debug) {
+        dbg = document.createElement("div");
+        dbg.style.cssText = "position:fixed;left:8px;bottom:8px;z-index:9999;color:#0f0;font:14px monospace;background:#000a;padding:4px 8px;";
+        document.body.appendChild(dbg);
+      }
+      const log = t => { if (dbg) dbg.textContent = t; };
+
+      const X = new Vector3(1, 0, 0), Y = new Vector3(0, 1, 0), Z = new Vector3(0, 0, 1);
+      const qTmp = new Quaternion();
+      const turn = (part, axis, angle) => part.o.quaternion.copy(part.q).multiply(qTmp.setFromAxisAngle(axis, angle));
+      const smooth = x => { x = Math.min(1, Math.max(0, x)); return x * x * (3 - 2 * x); };
+      const shown = o => { for (; o; o = o.parent) if (!o.visible) return false; return true; };
+
+      const LEGS = ["LegL0", "LegL1", "LegL2", "LegL3", "LegR0", "LegR1", "LegR2", "LegR3"];
+      const GAIT_A = new Set(["LegL0", "LegR1", "LegL2", "LegR3"]); // alternating tetrapod gait
+
+      onStart(context => {
+        let rig = null, wasShown = false, entranceStart = -99;
+        let twitchLeg = null, twitchStart = -99, nextTwitch = 0;
+
+        function grab() {
+          const root = context.scene.getObjectByName("SpiderRig");
+          if (!root) return null;
+          const get = n => {
+            const o = n === "SpiderRig" ? root : root.getObjectByName(n);
+            return o ? { o, q: o.quaternion.clone(), p: o.position.clone(), s: o.scale.clone() } : null;
+          };
+          const r = { root: get("SpiderRig"), torso: get("Torso"), abdomen: get("Abdomen"),
+                      fangL: get("FangL"), fangR: get("FangR"), legs: LEGS.map(get) };
+          return r.torso && r.abdomen && r.legs.every(Boolean) ? r : null;
+        }
+
+        function tick() {
+          requestAnimationFrame(tick);
+          const t = performance.now() / 1000;
+          if (!rig) { rig = grab(); log(rig ? "rig found" : "waiting for spider..."); if (!rig) return; }
+
+          // restart the scuttle whenever she (re)appears on a face
+          const isShown = shown(rig.root.o);
+          if (isShown && !wasShown) entranceStart = t;
+          wasShown = isShown;
+
+          const u = (t - entranceStart) / ENTRANCE_SECONDS;
+          const walking = u < 1;
+
+          // root: slide in from the side, facing her direction of travel, then turn to the camera
+          const slide = walking ? ENTRANCE_DISTANCE * (1 - smooth(u)) : 0;
+          rig.root.o.position.set(rig.root.p.x + slide, rig.root.p.y, rig.root.p.z);
+          const yaw = walking ? -Math.PI / 2 * (1 - smooth((u - 0.7) / 0.3)) : 0;
+          turn(rig.root, Y, yaw);
+
+          // breathing: abdomen swells, torso bobs
+          const b = Math.sin(2 * Math.PI * t / BREATH_SECONDS);
+          rig.abdomen.o.scale.set(rig.abdomen.s.x * (1 + 0.02 * b), rig.abdomen.s.y * (1 + 0.04 * b), rig.abdomen.s.z * (1 + 0.04 * b));
+          rig.torso.o.position.y = rig.torso.p.y + 0.0012 * Math.sin(2 * Math.PI * t / BREATH_SECONDS + 1);
+
+          // fangs: short chewing bursts
+          const c = t % CHEW_EVERY;
+          const chew = c < 0.7 ? 0.35 * Math.sin(2 * Math.PI * 7 * c) * Math.sin(Math.PI * c / 0.7) : 0;
+          if (rig.fangL) turn(rig.fangL, X, chew);
+          if (rig.fangR) turn(rig.fangR, X, -chew);
+
+          // legs: fast gait while walking; idle sway plus a random twitch
+          if (!walking && t > nextTwitch) {
+            twitchLeg = LEGS[Math.floor(Math.random() * LEGS.length)];
+            twitchStart = t; nextTwitch = t + 0.8 + Math.random() * 1.6;
+          }
+          rig.legs.forEach((leg, i) => {
+            const name = LEGS[i];
+            let lift;
+            if (walking) {
+              lift = 0.45 * Math.max(0, Math.sin(2 * Math.PI * 9 * t + (GAIT_A.has(name) ? 0 : Math.PI)));
+            } else {
+              lift = 0.03 * Math.sin(1.3 * t + i);
+              const tw = t - twitchStart;
+              if (name === twitchLeg && tw < 0.28) lift += 0.5 * Math.sin(Math.PI * tw / 0.28);
+            }
+            turn(leg, Z, lift);
+          });
+
+          if (debug) log(`rig ok | shown=${isShown} | ${walking ? "scuttling" : "idle"}`);
+        }
+        requestAnimationFrame(tick);
+
+        // tap anywhere to replay the scuttle
+        window.addEventListener("pointerdown", () => { entranceStart = performance.now() / 1000; });
+      });
+    </script>
   </body>
 </html>
