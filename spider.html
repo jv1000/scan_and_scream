@@ -37,6 +37,14 @@
       #preview button { font-family: inherit; font-size: 6vw; padding: 10px 22px; border-radius: 30px;
                         border: 2px solid #ff2a1a; background: #5b0a0a; color: #fff; }
       #preview p { color: #ddd; font-family: system-ui, sans-serif; font-size: 15px; margin: 0; }
+      #start { inset: 0; background: rgba(0,0,0,0.78); display: flex; flex-direction: column;
+               align-items: center; justify-content: center; color: #ff2a1a; font-size: 11vw; text-align: center;
+               text-shadow: 0 0 14px #000; cursor: pointer; }
+      #start small { font-size: 5vw; color: #ddd; margin-top: 12px; }
+      #start.off { display: none; }
+      #mute { top: 14px; right: 14px; font-size: 26px; background: #0008; color: #fff; border: 1px solid #fff5;
+              border-radius: 24px; padding: 4px 10px; display: none; }
+      #mute.on { display: block; }
       #dbg { left: 8px; bottom: 8px; color: #0f0; font: 13px monospace; background: #000a; padding: 4px 8px; }
     </style>
   </head>
@@ -50,6 +58,8 @@
     <div id="frame"></div>
     <div id="caption" class="ui">don't look behind you...</div>
     <button id="curse" class="ui">Take the curse home</button>
+    <button id="mute" class="ui">🔊</button>
+    <div id="start" class="ui">Tap to enter...<br>if you dare<small>turn your sound on</small></div>
     <div id="preview" class="ui">
       <img id="shot" alt="Your cursed photo">
       <div class="row"><button id="share">Share</button><button id="close">Close</button></div>
@@ -62,27 +72,24 @@
                MeshBasicMaterial, CylinderGeometry, DoubleSide } from "three";
 
       // ================= SETTINGS YOU CAN PLAY WITH =================
-      // Positions are x, y, z in the spider's head space: y = up, z = toward the camera.
+      // Positions are x, y, z in head space: y = up, z = toward the camera.
       const S = {
-        ENTRANCE_SECONDS: 1.6,  ENTRANCE_DISTANCE: 0.35,   // little spider scuttle-in
+        SMALL_SCALE: 0.75,                                 // the little spider on your head
+        ENTRANCE_SECONDS: 1.6,  ENTRANCE_DISTANCE: 0.35,
         BREATH_SECONDS: 2.4,    CHEW_EVERY: 3.5,
-        CYCLE_START: 3.0,       CYCLE_SECONDS: 18,         // the show starts 3 s after a face appears, repeats
-        GIANT_SCALE: 3.2,
-        GIANT_PEEK: [0, -0.12, -0.16],                     // where the giant ends up, behind your head
-        GIANT_RISE: 0.12,                                  // how far below that it starts (hidden by your head)
-        GIANT_TILT: 0.3,                                   // radians: leans forward to stare down at you
-        EYES_RISE: 0.12,                                   // eyes peek up this far from behind your head
-        WEB_POS: [0, -0.17, 0.11],                         // web center, in front of your face
-        WEB_RADIUS: 0.09,
-        BABIES: 5,  BABY_SCALE: 0.3,  BABY_RUN: 0.3,       // how many, how small, how far they run
-        CURSE_BUTTON_AT: 7.5,                              // seconds after the face appears
+        CYCLE_START: 3.0,       CYCLE_SECONDS: 18,
+        GIANT_SCALE: 3.2,  GIANT_PEEK: [0, -0.12, -0.16],  GIANT_RISE: 0.12,  GIANT_TILT: 0.3,
+        EYES_RISE: 0.12,
+        WEB_POS: [0, -0.17, 0.11],  WEB_RADIUS: 0.09,
+        BABIES: 5,  BABY_SIZE: [0.2, 0.3],                 // random size range per baby
+        BABY_ZONE: { x: 0, y: -0.12, rx: 0.09, ry: 0.13 }, // oval on your face/head they must stay inside
+        BABY_SPEED: [0.05, 0.11],                          // meters/second while darting
+        CURSE_BUTTON_AT: 7.5,
         CAPTIONS: [[0, 4.5, "don't look behind you..."], [10.5, 13, "they're hatching..."]],
+        VOLUME: 0.9,
       };
-      // Cycle timeline (seconds into each cycle):
-      //   0-3     eyes rise behind your head, blink, duck    3-4.2    giant tears up behind you
-      //   4.5-7.5 little spider rappels down your face       7.5-10.5 she spins a web
-      //   10.5-13 babies hatch and scatter                   12.5-13.7 giant sinks away
-      //   13-15.5 she climbs back up, web fades
+      //   0-3 eyes | 3-4.2 giant rises | 4.5-7.5 rappel | 7.5-10.5 web | 10.5-17.5 babies roam
+      //   12.5-13.7 giant sinks | 13-15.5 mom climbs up | 16.5-17.5 babies hide in your hair
       // ===============================================================
 
       const $ = id => document.getElementById(id);
@@ -90,16 +97,80 @@
       let dbg = null;
       if (debug) { dbg = document.createElement("div"); dbg.id = "dbg"; dbg.className = "ui"; document.body.appendChild(dbg); }
       const log = t => { if (dbg) dbg.textContent = t; };
+      const rand = (a, b) => a + Math.random() * (b - a);
 
+      // =================== SOUND (all synthesized, no files) ===================
+      let ac = null, master = null, noiseBuf = null, muted = false;
+      function initAudio() {
+        if (ac) { ac.resume(); return; }
+        try { if (navigator.audioSession) navigator.audioSession.type = "playback"; } catch (e) {}
+        ac = new (window.AudioContext || window.webkitAudioContext)();
+        master = ac.createGain(); master.gain.value = S.VOLUME; master.connect(ac.destination);
+        noiseBuf = ac.createBuffer(1, ac.sampleRate, ac.sampleRate);
+        const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+        drone();
+      }
+      function env(g, t0, peak, a, hold, r) {
+        g.gain.setValueAtTime(0.0001, t0);
+        g.gain.exponentialRampToValueAtTime(peak, t0 + a);
+        g.gain.setValueAtTime(peak, t0 + a + hold);
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + a + hold + r);
+      }
+      function drone() {   // low, slowly breathing, slightly out of tune
+        const f = ac.createBiquadFilter(); f.type = "lowpass"; f.frequency.value = 160; f.Q.value = 6;
+        const g = ac.createGain(); g.gain.value = 0.07; f.connect(g); g.connect(master);
+        [55, 58.3, 82.4].forEach(hz => { const o = ac.createOscillator(); o.type = "sawtooth"; o.frequency.value = hz; o.connect(f); o.start(); });
+        const lfo = ac.createOscillator(), lg = ac.createGain(); lfo.frequency.value = 0.08; lg.gain.value = 90;
+        lfo.connect(lg); lg.connect(f.frequency); lfo.start();
+      }
+      function noise(t0, type, hz, q, peak, a, hold, r) {
+        const src = ac.createBufferSource(); src.buffer = noiseBuf; src.loop = true;
+        const f = ac.createBiquadFilter(); f.type = type; f.frequency.value = hz; f.Q.value = q;
+        const g = ac.createGain(); env(g, t0, peak, a, hold, r);
+        src.connect(f); f.connect(g); g.connect(master); src.start(t0); src.stop(t0 + a + hold + r + 0.05);
+        return f;
+      }
+      const SFX = {
+        whisper() {  // breathy hiss that sweeps, like something inhaling behind you
+          const t = ac.currentTime, f = noise(t, "bandpass", 900, 7, 0.35, 0.6, 0.5, 1.2);
+          f.frequency.setValueAtTime(700, t); f.frequency.exponentialRampToValueAtTime(2200, t + 1.6);
+        },
+        stinger() {  // dissonant swell + noise hit
+          const t = ac.currentTime;
+          [110, 116.5, 155.6, 233].forEach(hz => {
+            const o = ac.createOscillator(), g = ac.createGain(); o.type = "sawtooth"; o.frequency.value = hz;
+            o.frequency.linearRampToValueAtTime(hz * 0.97, t + 2.5);
+            env(g, t, 0.09, 0.08, 0.3, 2.2); o.connect(g); g.connect(master); o.start(t); o.stop(t + 2.7);
+          });
+          noise(t, "lowpass", 900, 1, 0.5, 0.01, 0.05, 0.7);
+        },
+        heartbeat(count) {
+          const t0 = ac.currentTime;
+          for (let i = 0; i < count; i++) for (const [dt, v] of [[0, 0.6], [0.22, 0.4]]) {
+            const t = t0 + i * 0.95 + dt, o = ac.createOscillator(), g = ac.createGain();
+            o.type = "sine"; o.frequency.setValueAtTime(70, t); o.frequency.exponentialRampToValueAtTime(40, t + 0.15);
+            env(g, t, v, 0.01, 0.02, 0.18); o.connect(g); g.connect(master); o.start(t); o.stop(t + 0.3);
+          }
+        },
+        skitter(seconds, density) {  // tiny leg clicks at random intervals
+          let t = ac.currentTime; const end = t + seconds;
+          while (t < end) { noise(t, "highpass", rand(2500, 5500), 1, rand(0.08, 0.22), 0.002, 0.004, 0.02); t += rand(0.02, 0.09) / density; }
+        },
+      };
+      const play = (name, ...args) => { if (ac && !muted) try { SFX[name](...args); } catch (e) {} };
+
+      // =================== MOTION HELPERS ===================
       const X = new Vector3(1, 0, 0), Y = new Vector3(0, 1, 0), Z = new Vector3(0, 0, 1);
-      const qA = new Quaternion();
+      const qA = new Quaternion(), qB = new Quaternion();
       const qTilt = new Quaternion().setFromAxisAngle(X, S.GIANT_TILT);
-      const qHang = new Quaternion().setFromAxisAngle(X, Math.PI / 2);   // belly to your face, head down
+      const qHang = new Quaternion().setFromAxisAngle(X, Math.PI / 2);
       const turn = (part, axis, angle) => part.o.quaternion.copy(part.q).multiply(qA.setFromAxisAngle(axis, angle));
       const smooth = x => { x = Math.min(1, Math.max(0, x)); return x * x * (3 - 2 * x); };
       const within = (c, a, b) => c >= a && c < b;
       const shown = o => { for (; o; o = o.parent) if (!o.visible) return false; return true; };
       const v3 = a => new Vector3(...a);
+      // gently curved face surface so babies hug the face instead of floating in a flat plane
+      const faceZ = (x, y) => S.WEB_POS[2] - 1.5 * x * x - 1.0 * (y - S.WEB_POS[1]) ** 2;
 
       const LEGS = ["LegL0", "LegL1", "LegL2", "LegL3", "LegR0", "LegR1", "LegR2", "LegR3"];
       const GAIT_A = new Set(["LegL0", "LegR1", "LegL2", "LegR3"]);
@@ -116,7 +187,7 @@
         LEGS.forEach(n => r[n] = get(n));
         return r.Torso && r.Abdomen && LEGS.every(n => r[n]) ? r : null;
       }
-      const newState = off => ({ nextTwitch: 0, leg: null, start: -99, chewOffset: off });
+      const newState = off => ({ nextTwitch: 0, leg: null, start: -99, chewOffset: off, gaitSpeed: 9 });
 
       function animateBody(r, st, t, mode) {
         const b = Math.sin(2 * Math.PI * t / S.BREATH_SECONDS);
@@ -131,7 +202,7 @@
         }
         LEGS.forEach((n, i) => {
           let lift;
-          if (mode === "walk") lift = 0.45 * Math.max(0, Math.sin(2 * Math.PI * 9 * t + (GAIT_A.has(n) ? 0 : Math.PI)));
+          if (mode === "walk") lift = 0.45 * Math.max(0, Math.sin(2 * Math.PI * st.gaitSpeed * t + (GAIT_A.has(n) ? 0 : Math.PI)));
           else if (mode === "flail") lift = 0.3 * Math.sin(2 * Math.PI * 3 * t + i);
           else {
             lift = 0.03 * Math.sin(1.3 * t + i);
@@ -142,7 +213,6 @@
         });
       }
 
-      // Eyes: rise (0-0.8), hold with a blink at 1.8, duck back down (2.7-3.0)
       function eyeState(c) {
         if (!within(c, 0, 3)) return null;
         let open = 1, rise = 1;
@@ -153,8 +223,6 @@
         return { open, rise };
       }
 
-      // A flat orb web in the XY plane (facing the camera), built as one mesh so it's cheap.
-      // Segments are ordered spokes first, then the spiral, so a growing drawRange "spins" it.
       function makeWeb(radius) {
         const spokes = 10, rings = 7, w = 0.0012, pos = [];
         const quad = (a, b) => {
@@ -165,26 +233,50 @@
         };
         const P = (r, k) => { const a = 2 * Math.PI * k / spokes; return { x: r * Math.cos(a), y: r * Math.sin(a) }; };
         for (let k = 0; k < spokes; k++) quad(P(radius * 0.05, k), P(radius * (0.92 + 0.08 * Math.sin(k * 3.1)), k));
-        const spokeCount = spokes;
-        for (let ring = 1; ring <= rings; ring++) {
-          for (let k = 0; k < spokes; k++) {
-            const r0 = radius * (0.12 + 0.8 * (ring - 1 + k / spokes) / rings);
-            const r1 = radius * (0.12 + 0.8 * (ring - 1 + (k + 1) / spokes) / rings);
-            quad(P(r0, k), P(r1, k + 1));
-          }
+        for (let ring = 1; ring <= rings; ring++) for (let k = 0; k < spokes; k++) {
+          const r0 = radius * (0.12 + 0.8 * (ring - 1 + k / spokes) / rings);
+          const r1 = radius * (0.12 + 0.8 * (ring - 1 + (k + 1) / spokes) / rings);
+          quad(P(r0, k), P(r1, k + 1));
         }
-        const geo = new BufferGeometry();
-        geo.setAttribute("position", new Float32BufferAttribute(pos, 3));
-        const mat = new MeshBasicMaterial({ color: 0xf2f2ff, transparent: true, opacity: 0.9, side: DoubleSide, depthWrite: false });
-        const mesh = new Mesh(geo, mat);
-        mesh.userData = { segments: pos.length / 18, spokeCount };
-        mesh.frustumCulled = false;
+        const geo = new BufferGeometry(); geo.setAttribute("position", new Float32BufferAttribute(pos, 3));
+        const mesh = new Mesh(geo, new MeshBasicMaterial({ color: 0xf2f2ff, transparent: true, opacity: 0.9, side: DoubleSide, depthWrite: false }));
+        mesh.userData.segments = pos.length / 18; mesh.frustumCulled = false;
         return mesh;
+      }
+
+      // One baby's brain: dart, freeze, dart; wander; turn back at the edge of the face; hide at the end.
+      function stepBaby(bb, dt, c) {
+        const Zn = S.BABY_ZONE;
+        bb.timer -= dt;
+        if (bb.timer <= 0) {
+          bb.darting = !bb.darting;
+          bb.timer = bb.darting ? rand(0.3, 1.1) : rand(0.2, 0.9);
+          bb.targetSpeed = bb.darting ? rand(...S.BABY_SPEED) : 0;
+          if (bb.darting) bb.heading += rand(-1.2, 1.2);          // new idea about where to go
+        }
+        bb.speed += (bb.targetSpeed - bb.speed) * Math.min(1, dt * 12);
+        bb.heading += rand(-1, 1) * 3 * dt;                        // constant jitter while moving
+        let tx = null, ty = null;
+        if (c >= 16.5) { tx = bb.hideX; ty = 0.03; bb.targetSpeed = S.BABY_SPEED[1]; bb.timer = 1; bb.darting = true; }
+        else {
+          const ex = (bb.x - Zn.x) / Zn.rx, ey = (bb.y - Zn.y) / Zn.ry;
+          if (ex * ex + ey * ey > 0.8) { tx = Zn.x + rand(-0.03, 0.03); ty = Zn.y + rand(-0.03, 0.03); }
+        }
+        if (tx !== null) {                                         // steer toward target
+          const want = Math.atan2(ty - bb.y, tx - bb.x);
+          let d = want - bb.heading; d = Math.atan2(Math.sin(d), Math.cos(d));
+          bb.heading += d * Math.min(1, dt * 6);
+        }
+        bb.x += Math.cos(bb.heading) * bb.speed * dt;
+        bb.y += Math.sin(bb.heading) * bb.speed * dt;
+        let z = faceZ(bb.x, bb.y) + 0.004;
+        if (c >= 16.5) z -= smooth((c - 16.5) / 1.0) * 0.12;       // slip back behind your head
+        return z;
       }
 
       onStart(context => {
         let small = null, giant = null, eyes = null, babies = [], web = null, thread = null;
-        let wasShown = false, start = -99;
+        let wasShown = false, start = -99, lastT = performance.now() / 1000, prevC = -1, prevSince = -1;
         const stSmall = newState(0), stGiant = newState(1.3);
         let eyesHome = null;
 
@@ -193,31 +285,25 @@
           if (!root) return false;
           small = collect(root, null);
           if (!small) return false;
-          const rest = {};
-          for (const k in small) if (small[k]) rest[k] = small[k];
+          const rest = {}; for (const k in small) if (small[k]) rest[k] = small[k];
           const parent = root.parent;
 
-          // Giant: clone sharing geometry/materials
           const g = root.clone(true); g.name = "GiantRig"; parent.add(g);
           giant = collect(g, rest); g.scale.setScalar(S.GIANT_SCALE); g.visible = false;
 
-          // Eyes: the giant's eye cluster, placed exactly where the giant's eyes will be
           const eyeMesh = root.getObjectByName("Torso_eye");
           if (eyeMesh) {
             eyes = new Group(); eyes.add(eyeMesh.clone(true)); eyes.visible = false; parent.add(eyes);
             eyesHome = small.Torso.p.clone().applyQuaternion(qTilt).multiplyScalar(S.GIANT_SCALE).add(v3(S.GIANT_PEEK));
           }
 
-          // Babies
           for (let i = 0; i < S.BABIES; i++) {
-            const b = root.clone(true); b.name = "Baby" + i; parent.add(b);
-            b.scale.setScalar(S.BABY_SCALE); b.visible = false;
-            const a = (2 * Math.PI * i) / S.BABIES + (Math.random() - 0.5) * 0.8;
-            babies.push({ r: collect(b, rest), st: newState(i * 0.7), angle: a,
-                          delay: i * 0.15, speed: 0.8 + Math.random() * 0.4 });
+            const b = root.clone(true); b.name = "Baby" + i; parent.add(b); b.visible = false;
+            b.scale.setScalar(rand(...S.BABY_SIZE));
+            const st = newState(rand(0, 3)); st.gaitSpeed = rand(10, 14);
+            babies.push({ r: collect(b, rest), st, alive: false, delay: rand(0, 0.8), hideX: rand(-0.06, 0.06) });
           }
 
-          // Web and silk thread
           web = makeWeb(S.WEB_RADIUS); web.position.set(...S.WEB_POS); web.visible = false; parent.add(web);
           const tg = new CylinderGeometry(0.0007, 0.0007, 1, 5); tg.translate(0, 0.5, 0);
           thread = new Mesh(tg, new MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85 }));
@@ -225,11 +311,9 @@
           return true;
         }
 
-        const tmpV = new Vector3(), tmpQ = new Quaternion();
-
         function tick() {
           requestAnimationFrame(tick);
-          const t = performance.now() / 1000;
+          const t = performance.now() / 1000, dt = Math.min(0.05, t - lastT); lastT = t;
           if (!small && !build()) { log("waiting for spider..."); return; }
 
           const isShown = shown(small.SpiderRig.o);
@@ -237,14 +321,24 @@
           wasShown = isShown;
           const since = t - start;
           const c = since < S.CYCLE_START ? -1 : (since - S.CYCLE_START) % S.CYCLE_SECONDS;
+          if (c < prevC) prevC = -1;                                   // new cycle
+          const hit = at => isShown && prevC < at && c >= at;          // fires once when c crosses `at`
+
+          // ---------- sound cues ----------
+          if (isShown && prevSince < 0 && since >= 0) play("skitter", 1.4, 1);
+          if (hit(0))    play("whisper");
+          if (hit(3))    play("stinger");
+          if (hit(4.6))  play("heartbeat", 8);
+          if (hit(10.5)) play("skitter", 3, 1.6);
+          if (hit(16.5)) play("skitter", 1, 1.2);
+          prevSince = since;
 
           // ---------- little spider ----------
           const R = small.SpiderRig, home = R.p, webP = v3(S.WEB_POS);
           const u = since / S.ENTRANCE_SECONDS, walking = u < 1;
           let pos = home.clone(), hang = 0, mode = walking ? "walk" : "idle", yaw = 0;
           if (walking) {
-            pos.x += S.ENTRANCE_DISTANCE * (1 - smooth(u));
-            yaw = -Math.PI / 2 * (1 - smooth((u - 0.7) / 0.3));
+            pos.x += S.ENTRANCE_DISTANCE * (1 - smooth(u)); yaw = -Math.PI / 2 * (1 - smooth((u - 0.7) / 0.3));
           } else if (within(c, 4.5, 7.5)) {
             pos.lerpVectors(home, webP, smooth((c - 4.5) / 3)); hang = smooth((c - 4.5) / 0.6); mode = "flail";
           } else if (within(c, 7.5, 13)) {
@@ -253,19 +347,15 @@
             pos.lerpVectors(webP, home, smooth((c - 13) / 2.5)); hang = 1 - smooth((c - 15) / 0.5); mode = "flail";
           }
           R.o.position.copy(pos);
-          R.o.quaternion.copy(R.q)
-            .multiply(tmpQ.setFromAxisAngle(Y, yaw))
-            .multiply(qA.setFromAxisAngle(X, Math.PI / 2 * hang));
+          R.o.scale.copy(R.s).multiplyScalar(S.SMALL_SCALE);
+          R.o.quaternion.copy(R.q).multiply(qB.setFromAxisAngle(Y, yaw)).multiply(qA.setFromAxisAngle(X, Math.PI / 2 * hang));
           animateBody(small, stSmall, t, mode);
 
-          // silk thread from the top of your head down to her
           const threadOn = isShown && within(c, 4.5, 15.5);
           thread.visible = threadOn;
           if (threadOn) {
-            const top = tmpV.copy(home).add(new Vector3(0, 0.005, 0.06));
-            const dir = pos.clone().sub(top);
-            thread.position.copy(top);
-            thread.scale.set(1, Math.max(dir.length(), 0.001), 1);
+            const top = home.clone().add(new Vector3(0, 0.005, 0.06)), dir = pos.clone().sub(top);
+            thread.position.copy(top); thread.scale.set(1, Math.max(dir.length(), 0.001), 1);
             thread.quaternion.setFromUnitVectors(Y, dir.normalize());
           }
 
@@ -273,26 +363,28 @@
           const webOn = isShown && within(c, 7.5, 14.5);
           web.visible = webOn;
           if (webOn) {
-            const f = smooth((c - 7.5) / 3);
-            web.geometry.setDrawRange(0, Math.ceil(f * web.userData.segments) * 6);
+            web.geometry.setDrawRange(0, Math.ceil(smooth((c - 7.5) / 3) * web.userData.segments) * 6);
             web.material.opacity = 0.9 * (1 - smooth((c - 13) / 1.5));
           }
 
           // ---------- babies ----------
           babies.forEach(bb => {
             if (!bb.r) return;
-            const tau = c - 10.5 - bb.delay, B = bb.r.SpiderRig;
-            const on = isShown && within(tau, 0, 2.5);
-            B.o.visible = on;
-            if (!on) return;
-            const d = S.BABY_RUN * bb.speed * (tau / 2.5), dx = Math.cos(bb.angle), dy = Math.sin(bb.angle);
-            B.o.position.set(S.WEB_POS[0] + dx * d, S.WEB_POS[1] + dy * d, S.WEB_POS[2] + 0.004);
-            const phi = Math.atan2(dx, -dy);
-            B.o.quaternion.setFromAxisAngle(Z, phi).multiply(qHang);
-            animateBody(bb.r, bb.st, t, "walk");
+            const B = bb.r.SpiderRig, active = isShown && c >= 10.5 + bb.delay && c < 17.5;
+            if (active && !bb.alive) {                                   // hatch
+              bb.alive = true; bb.x = S.WEB_POS[0] + rand(-0.01, 0.01); bb.y = S.WEB_POS[1] + rand(-0.01, 0.01);
+              bb.heading = rand(0, 2 * Math.PI); bb.speed = 0; bb.darting = false; bb.timer = rand(0, 0.3);
+            }
+            if (!active) { bb.alive = false; B.o.visible = false; return; }
+            const z = stepBaby(bb, dt, c);
+            B.o.visible = true;
+            B.o.position.set(bb.x, bb.y, z);
+            const dx = Math.cos(bb.heading), dy = Math.sin(bb.heading);
+            B.o.quaternion.setFromAxisAngle(Z, Math.atan2(dx, -dy)).multiply(qHang);
+            animateBody(bb.r, bb.st, t, bb.speed > 0.01 ? "walk" : "idle");
           });
 
-          // ---------- eyes, then the giant tears up behind you ----------
+          // ---------- eyes, then the giant ----------
           const es = eyeState(c);
           if (eyes && eyesHome) {
             eyes.visible = isShown && !!es && es.open > 0.01;
@@ -314,18 +406,27 @@
             animateBody(giant, stGiant, t, gmode);
           }
 
-          // ---------- captions and button ----------
           const cap = isShown ? S.CAPTIONS.find(([a, b]) => within(c, a, b)) : null;
           if (cap) $("caption").textContent = cap[2];
           $("caption").classList.toggle("on", !!cap);
           $("curse").classList.toggle("on", isShown && since > S.CURSE_BUTTON_AT);
-          if (debug) log(`ok | shown=${isShown} | t=${since.toFixed(1)} | cycle=${c.toFixed(1)}`);
+          prevC = c;
+          if (debug) log(`ok | shown=${isShown} | t=${since.toFixed(1)} | cycle=${c.toFixed(1)} | audio=${ac ? ac.state : "off"}`);
         }
         requestAnimationFrame(tick);
 
+        // ---------- entry screen (unlocks sound), mute, tap to replay ----------
+        $("start").addEventListener("click", () => {
+          initAudio(); $("start").classList.add("off"); $("mute").classList.add("on");
+          start = performance.now() / 1000; prevC = -1; prevSince = -1;
+        });
+        $("mute").addEventListener("click", () => {
+          muted = !muted; if (master) master.gain.value = muted ? 0 : S.VOLUME;
+          $("mute").textContent = muted ? "🔇" : "🔊";
+        });
         window.addEventListener("pointerdown", e => {
           if (e.target.closest && e.target.closest(".ui")) return;
-          start = performance.now() / 1000;
+          start = performance.now() / 1000; prevC = -1; prevSince = -1;
         });
 
         // ---------- Take the curse home ----------
@@ -360,11 +461,8 @@
         $("share").addEventListener("click", () => {
           if (!lastShot) return;
           const f = toFile(lastShot);
-          if (navigator.canShare && navigator.canShare({ files: [f] })) {
-            navigator.share({ files: [f], title: "Scan and Scream" }).catch(() => {});
-          } else {
-            $("hint").textContent = "Sharing isn't available here. Press and hold the photo to save it.";
-          }
+          if (navigator.canShare && navigator.canShare({ files: [f] })) navigator.share({ files: [f], title: "Scan and Scream" }).catch(() => {});
+          else $("hint").textContent = "Sharing isn't available here. Press and hold the photo to save it.";
         });
         $("close").addEventListener("click", () => $("preview").classList.remove("on"));
       });
