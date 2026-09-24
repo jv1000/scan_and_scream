@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
   <head>
-    <!-- Scan and Scream, Chapter 2: Don't Look Behind You.
+    <!-- Scan and Scream, Chapter 2.5: eyes, giant, rappel, web, babies.
          Needs spider-v4.glb next to this file. Add ?debug to the URL for a status line. -->
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -58,22 +58,31 @@
 
     <script type="module">
       import { onStart } from "@needle-tools/engine";
-      import { Quaternion, Vector3, Group } from "three";
+      import { Quaternion, Vector3, Group, Mesh, BufferGeometry, Float32BufferAttribute,
+               MeshBasicMaterial, CylinderGeometry, DoubleSide } from "three";
 
       // ================= SETTINGS YOU CAN PLAY WITH =================
+      // Positions are x, y, z in the spider's head space: y = up, z = toward the camera.
       const S = {
-        ENTRANCE_SECONDS: 1.6,  ENTRANCE_DISTANCE: 0.35,     // little spider scuttle-in
+        ENTRANCE_SECONDS: 1.6,  ENTRANCE_DISTANCE: 0.35,   // little spider scuttle-in
         BREATH_SECONDS: 2.4,    CHEW_EVERY: 3.5,
-        CYCLE_START: 3.0,       CYCLE_SECONDS: 18,           // scare cycle starts 3 s after a face appears, repeats
-        EYES_POS: [0.16, -0.14, -0.10], EYES_SCALE: 3.2,     // glowing eyes over the shoulder (x, y, z)
-        GIANT_SCALE: 3.2,                                    // how big the giant is vs. the little one
-        GIANT_PEEK: [0, -0.12, -0.16],                       // where the giant stops, behind the head
-        GIANT_FROM_Y: 0.45,                                  // where it descends from (above the frame)
-        GIANT_TILT: 0.3,                                     // radians: leans forward to look down at you
-        CURSE_BUTTON_AT: 7.5,                                // seconds after the face appears
+        CYCLE_START: 3.0,       CYCLE_SECONDS: 18,         // the show starts 3 s after a face appears, repeats
+        GIANT_SCALE: 3.2,
+        GIANT_PEEK: [0, -0.12, -0.16],                     // where the giant ends up, behind your head
+        GIANT_RISE: 0.12,                                  // how far below that it starts (hidden by your head)
+        GIANT_TILT: 0.3,                                   // radians: leans forward to stare down at you
+        EYES_RISE: 0.12,                                   // eyes peek up this far from behind your head
+        WEB_POS: [0, -0.17, 0.11],                         // web center, in front of your face
+        WEB_RADIUS: 0.09,
+        BABIES: 5,  BABY_SCALE: 0.3,  BABY_RUN: 0.3,       // how many, how small, how far they run
+        CURSE_BUTTON_AT: 7.5,                              // seconds after the face appears
+        CAPTIONS: [[0, 4.5, "don't look behind you..."], [10.5, 13, "they're hatching..."]],
       };
       // Cycle timeline (seconds into each cycle):
-      //   0-3 eyes open, blink, close | 3-4.5 giant descends | 4.5-10 giant lurks | 10-11.5 giant leaves
+      //   0-3     eyes rise behind your head, blink, duck    3-4.2    giant tears up behind you
+      //   4.5-7.5 little spider rappels down your face       7.5-10.5 she spins a web
+      //   10.5-13 babies hatch and scatter                   12.5-13.7 giant sinks away
+      //   13-15.5 she climbs back up, web fades
       // ===============================================================
 
       const $ = id => document.getElementById(id);
@@ -83,32 +92,32 @@
       const log = t => { if (dbg) dbg.textContent = t; };
 
       const X = new Vector3(1, 0, 0), Y = new Vector3(0, 1, 0), Z = new Vector3(0, 0, 1);
-      const qA = new Quaternion(), qB = new Quaternion();
+      const qA = new Quaternion();
+      const qTilt = new Quaternion().setFromAxisAngle(X, S.GIANT_TILT);
+      const qHang = new Quaternion().setFromAxisAngle(X, Math.PI / 2);   // belly to your face, head down
       const turn = (part, axis, angle) => part.o.quaternion.copy(part.q).multiply(qA.setFromAxisAngle(axis, angle));
       const smooth = x => { x = Math.min(1, Math.max(0, x)); return x * x * (3 - 2 * x); };
+      const within = (c, a, b) => c >= a && c < b;
       const shown = o => { for (; o; o = o.parent) if (!o.visible) return false; return true; };
+      const v3 = a => new Vector3(...a);
 
       const LEGS = ["LegL0", "LegL1", "LegL2", "LegL3", "LegR0", "LegR1", "LegR2", "LegR3"];
       const GAIT_A = new Set(["LegL0", "LegR1", "LegL2", "LegR3"]);
 
-      // Collect named parts; rest poses come from `restFrom` (the original rig) so clones start clean.
-      function collect(root, restFrom) {
+      function collect(root, rest) {
         const get = n => {
           const o = n === "SpiderRig" ? root : root.getObjectByName(n);
           if (!o) return null;
-          const src = restFrom ? restFrom[n] : o;
-          return { o, q: src.quaternion ? src.quaternion.clone() : src.q.clone(),
-                      p: src.position ? src.position.clone() : src.p.clone(),
-                      s: src.scale ? src.scale.clone() : src.s.clone() };
+          const src = rest ? rest[n] : { q: o.quaternion, p: o.position, s: o.scale };
+          return { o, q: src.q.clone(), p: src.p.clone(), s: src.s.clone() };
         };
         const r = { SpiderRig: get("SpiderRig"), Torso: get("Torso"), Abdomen: get("Abdomen"),
                     FangL: get("FangL"), FangR: get("FangR") };
         LEGS.forEach(n => r[n] = get(n));
-        const ok = r.Torso && r.Abdomen && LEGS.every(n => r[n]);
-        return ok ? r : null;
+        return r.Torso && r.Abdomen && LEGS.every(n => r[n]) ? r : null;
       }
+      const newState = off => ({ nextTwitch: 0, leg: null, start: -99, chewOffset: off });
 
-      // Breathing, chewing, leg motion. `st` holds per-spider twitch state.
       function animateBody(r, st, t, mode) {
         const b = Math.sin(2 * Math.PI * t / S.BREATH_SECONDS);
         r.Abdomen.o.scale.set(r.Abdomen.s.x * (1 + 0.02 * b), r.Abdomen.s.y * (1 + 0.04 * b), r.Abdomen.s.z * (1 + 0.04 * b));
@@ -133,19 +142,51 @@
         });
       }
 
-      // Eye openness over the 0-3 s window: open, hold, blink, hold, close.
-      function eyeOpen(c) {
-        if (c < 0 || c > 3) return 0;
-        if (c < 0.3) return c / 0.3;
-        if (c > 1.8 && c < 2.0) return Math.abs(c - 1.9) / 0.1;
-        if (c > 2.7) return (3 - c) / 0.3;
-        return 1;
+      // Eyes: rise (0-0.8), hold with a blink at 1.8, duck back down (2.7-3.0)
+      function eyeState(c) {
+        if (!within(c, 0, 3)) return null;
+        let open = 1, rise = 1;
+        if (c < 0.8) rise = smooth(c / 0.8);
+        if (c < 0.3) open = c / 0.3;
+        if (c > 1.8 && c < 2.0) open = Math.abs(c - 1.9) / 0.1;
+        if (c > 2.7) rise = 1 - smooth((c - 2.7) / 0.3);
+        return { open, rise };
+      }
+
+      // A flat orb web in the XY plane (facing the camera), built as one mesh so it's cheap.
+      // Segments are ordered spokes first, then the spiral, so a growing drawRange "spins" it.
+      function makeWeb(radius) {
+        const spokes = 10, rings = 7, w = 0.0012, pos = [];
+        const quad = (a, b) => {
+          const dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy) || 1;
+          const nx = -dy / L * w / 2, ny = dx / L * w / 2;
+          pos.push(a.x + nx, a.y + ny, 0, a.x - nx, a.y - ny, 0, b.x + nx, b.y + ny, 0,
+                   b.x + nx, b.y + ny, 0, a.x - nx, a.y - ny, 0, b.x - nx, b.y - ny, 0);
+        };
+        const P = (r, k) => { const a = 2 * Math.PI * k / spokes; return { x: r * Math.cos(a), y: r * Math.sin(a) }; };
+        for (let k = 0; k < spokes; k++) quad(P(radius * 0.05, k), P(radius * (0.92 + 0.08 * Math.sin(k * 3.1)), k));
+        const spokeCount = spokes;
+        for (let ring = 1; ring <= rings; ring++) {
+          for (let k = 0; k < spokes; k++) {
+            const r0 = radius * (0.12 + 0.8 * (ring - 1 + k / spokes) / rings);
+            const r1 = radius * (0.12 + 0.8 * (ring - 1 + (k + 1) / spokes) / rings);
+            quad(P(r0, k), P(r1, k + 1));
+          }
+        }
+        const geo = new BufferGeometry();
+        geo.setAttribute("position", new Float32BufferAttribute(pos, 3));
+        const mat = new MeshBasicMaterial({ color: 0xf2f2ff, transparent: true, opacity: 0.9, side: DoubleSide, depthWrite: false });
+        const mesh = new Mesh(geo, mat);
+        mesh.userData = { segments: pos.length / 18, spokeCount };
+        mesh.frustumCulled = false;
+        return mesh;
       }
 
       onStart(context => {
-        let small = null, giant = null, eyes = null, wasShown = false, start = -99;
-        const stSmall = { nextTwitch: 0, leg: null, start: -99, chewOffset: 0 };
-        const stGiant = { nextTwitch: 0, leg: null, start: -99, chewOffset: 1.3 };
+        let small = null, giant = null, eyes = null, babies = [], web = null, thread = null;
+        let wasShown = false, start = -99;
+        const stSmall = newState(0), stGiant = newState(1.3);
+        let eyesHome = null;
 
         function build() {
           const root = context.scene.getObjectByName("SpiderRig");
@@ -153,27 +194,38 @@
           small = collect(root, null);
           if (!small) return false;
           const rest = {};
-          for (const k in small) rest[k] = small[k];
+          for (const k in small) if (small[k]) rest[k] = small[k];
+          const parent = root.parent;
 
-          // Giant: a clone that shares the little spider's geometry and materials
-          const gRoot = root.clone(true);
-          gRoot.name = "GiantRig";
-          root.parent.add(gRoot);
-          giant = collect(gRoot, rest);
-          gRoot.scale.setScalar(S.GIANT_SCALE);
-          gRoot.visible = false;
+          // Giant: clone sharing geometry/materials
+          const g = root.clone(true); g.name = "GiantRig"; parent.add(g);
+          giant = collect(g, rest); g.scale.setScalar(S.GIANT_SCALE); g.visible = false;
 
-          // Shoulder eyes: a clone of the eye cluster only
+          // Eyes: the giant's eye cluster, placed exactly where the giant's eyes will be
           const eyeMesh = root.getObjectByName("Torso_eye");
           if (eyeMesh) {
-            eyes = new Group();
-            eyes.add(eyeMesh.clone(true));
-            eyes.position.set(...S.EYES_POS);
-            eyes.visible = false;
-            root.parent.add(eyes);
+            eyes = new Group(); eyes.add(eyeMesh.clone(true)); eyes.visible = false; parent.add(eyes);
+            eyesHome = small.Torso.p.clone().applyQuaternion(qTilt).multiplyScalar(S.GIANT_SCALE).add(v3(S.GIANT_PEEK));
           }
+
+          // Babies
+          for (let i = 0; i < S.BABIES; i++) {
+            const b = root.clone(true); b.name = "Baby" + i; parent.add(b);
+            b.scale.setScalar(S.BABY_SCALE); b.visible = false;
+            const a = (2 * Math.PI * i) / S.BABIES + (Math.random() - 0.5) * 0.8;
+            babies.push({ r: collect(b, rest), st: newState(i * 0.7), angle: a,
+                          delay: i * 0.15, speed: 0.8 + Math.random() * 0.4 });
+          }
+
+          // Web and silk thread
+          web = makeWeb(S.WEB_RADIUS); web.position.set(...S.WEB_POS); web.visible = false; parent.add(web);
+          const tg = new CylinderGeometry(0.0007, 0.0007, 1, 5); tg.translate(0, 0.5, 0);
+          thread = new Mesh(tg, new MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85 }));
+          thread.visible = false; thread.frustumCulled = false; parent.add(thread);
           return true;
         }
+
+        const tmpV = new Vector3(), tmpQ = new Quaternion();
 
         function tick() {
           requestAnimationFrame(tick);
@@ -181,44 +233,96 @@
           if (!small && !build()) { log("waiting for spider..."); return; }
 
           const isShown = shown(small.SpiderRig.o);
-          if (isShown && !wasShown) start = t;           // face found: restart the show
+          if (isShown && !wasShown) start = t;
           wasShown = isShown;
           const since = t - start;
-
-          // --- little spider: scuttle in, then live on your head
-          const u = since / S.ENTRANCE_SECONDS, walking = u < 1;
-          const R = small.SpiderRig;
-          R.o.position.set(R.p.x + (walking ? S.ENTRANCE_DISTANCE * (1 - smooth(u)) : 0), R.p.y, R.p.z);
-          turn(R, Y, walking ? -Math.PI / 2 * (1 - smooth((u - 0.7) / 0.3)) : 0);
-          animateBody(small, stSmall, t, walking ? "walk" : "idle");
-
-          // --- scare cycle
           const c = since < S.CYCLE_START ? -1 : (since - S.CYCLE_START) % S.CYCLE_SECONDS;
-          const open = eyeOpen(c);
-          if (eyes) {
-            eyes.visible = isShown && open > 0.01;
-            eyes.scale.set(S.EYES_SCALE, S.EYES_SCALE * Math.max(open, 0.01), S.EYES_SCALE);
-          }
-          $("caption").classList.toggle("on", isShown && c >= 0 && c < 4.5);
 
+          // ---------- little spider ----------
+          const R = small.SpiderRig, home = R.p, webP = v3(S.WEB_POS);
+          const u = since / S.ENTRANCE_SECONDS, walking = u < 1;
+          let pos = home.clone(), hang = 0, mode = walking ? "walk" : "idle", yaw = 0;
+          if (walking) {
+            pos.x += S.ENTRANCE_DISTANCE * (1 - smooth(u));
+            yaw = -Math.PI / 2 * (1 - smooth((u - 0.7) / 0.3));
+          } else if (within(c, 4.5, 7.5)) {
+            pos.lerpVectors(home, webP, smooth((c - 4.5) / 3)); hang = smooth((c - 4.5) / 0.6); mode = "flail";
+          } else if (within(c, 7.5, 13)) {
+            pos.copy(webP); hang = 1; mode = within(c, 7.5, 10.5) ? "walk" : "idle";
+          } else if (within(c, 13, 15.5)) {
+            pos.lerpVectors(webP, home, smooth((c - 13) / 2.5)); hang = 1 - smooth((c - 15) / 0.5); mode = "flail";
+          }
+          R.o.position.copy(pos);
+          R.o.quaternion.copy(R.q)
+            .multiply(tmpQ.setFromAxisAngle(Y, yaw))
+            .multiply(qA.setFromAxisAngle(X, Math.PI / 2 * hang));
+          animateBody(small, stSmall, t, mode);
+
+          // silk thread from the top of your head down to her
+          const threadOn = isShown && within(c, 4.5, 15.5);
+          thread.visible = threadOn;
+          if (threadOn) {
+            const top = tmpV.copy(home).add(new Vector3(0, 0.005, 0.06));
+            const dir = pos.clone().sub(top);
+            thread.position.copy(top);
+            thread.scale.set(1, Math.max(dir.length(), 0.001), 1);
+            thread.quaternion.setFromUnitVectors(Y, dir.normalize());
+          }
+
+          // ---------- web ----------
+          const webOn = isShown && within(c, 7.5, 14.5);
+          web.visible = webOn;
+          if (webOn) {
+            const f = smooth((c - 7.5) / 3);
+            web.geometry.setDrawRange(0, Math.ceil(f * web.userData.segments) * 6);
+            web.material.opacity = 0.9 * (1 - smooth((c - 13) / 1.5));
+          }
+
+          // ---------- babies ----------
+          babies.forEach(bb => {
+            if (!bb.r) return;
+            const tau = c - 10.5 - bb.delay, B = bb.r.SpiderRig;
+            const on = isShown && within(tau, 0, 2.5);
+            B.o.visible = on;
+            if (!on) return;
+            const d = S.BABY_RUN * bb.speed * (tau / 2.5), dx = Math.cos(bb.angle), dy = Math.sin(bb.angle);
+            B.o.position.set(S.WEB_POS[0] + dx * d, S.WEB_POS[1] + dy * d, S.WEB_POS[2] + 0.004);
+            const phi = Math.atan2(dx, -dy);
+            B.o.quaternion.setFromAxisAngle(Z, phi).multiply(qHang);
+            animateBody(bb.r, bb.st, t, "walk");
+          });
+
+          // ---------- eyes, then the giant tears up behind you ----------
+          const es = eyeState(c);
+          if (eyes && eyesHome) {
+            eyes.visible = isShown && !!es && es.open > 0.01;
+            if (es) {
+              eyes.position.copy(eyesHome).add(new Vector3(0, -S.EYES_RISE * (1 - es.rise), 0));
+              eyes.quaternion.copy(qTilt);
+              eyes.scale.set(S.GIANT_SCALE, S.GIANT_SCALE * Math.max(es.open, 0.01), S.GIANT_SCALE);
+            }
+          }
           const G = giant.SpiderRig;
           let gy = null, gmode = "idle";
-          if (c >= 3 && c < 4.5)        { gy = S.GIANT_FROM_Y + (S.GIANT_PEEK[1] - S.GIANT_FROM_Y) * smooth((c - 3) / 1.5); gmode = "flail"; }
-          else if (c >= 4.5 && c < 10)  { gy = S.GIANT_PEEK[1]; }
-          else if (c >= 10 && c < 11.5) { gy = S.GIANT_PEEK[1] + (S.GIANT_FROM_Y - S.GIANT_PEEK[1]) * smooth((c - 10) / 1.5); gmode = "flail"; }
+          if (within(c, 3, 4.2))          { gy = -S.GIANT_RISE * (1 - smooth((c - 3) / 1.2)); gmode = "flail"; }
+          else if (within(c, 4.2, 12.5))  { gy = 0; }
+          else if (within(c, 12.5, 13.7)) { gy = -S.GIANT_RISE * smooth((c - 12.5) / 1.2); gmode = "flail"; }
           G.o.visible = isShown && gy !== null;
           if (G.o.visible) {
-            G.o.position.set(S.GIANT_PEEK[0], gy, S.GIANT_PEEK[2]);
-            G.o.quaternion.copy(G.q).multiply(qB.setFromAxisAngle(X, S.GIANT_TILT));
+            G.o.position.set(S.GIANT_PEEK[0], S.GIANT_PEEK[1] + gy, S.GIANT_PEEK[2]);
+            G.o.quaternion.copy(G.q).multiply(qTilt);
             animateBody(giant, stGiant, t, gmode);
           }
 
+          // ---------- captions and button ----------
+          const cap = isShown ? S.CAPTIONS.find(([a, b]) => within(c, a, b)) : null;
+          if (cap) $("caption").textContent = cap[2];
+          $("caption").classList.toggle("on", !!cap);
           $("curse").classList.toggle("on", isShown && since > S.CURSE_BUTTON_AT);
-          if (debug) log(`ok | shown=${isShown} | t=${since.toFixed(1)} | cycle=${c.toFixed(1)} | ${walking ? "scuttle" : "idle"}`);
+          if (debug) log(`ok | shown=${isShown} | t=${since.toFixed(1)} | cycle=${c.toFixed(1)}`);
         }
         requestAnimationFrame(tick);
 
-        // tap the scene (not the buttons) to replay from the scuttle
         window.addEventListener("pointerdown", e => {
           if (e.target.closest && e.target.closest(".ui")) return;
           start = performance.now() / 1000;
@@ -232,7 +336,7 @@
           const cv = document.createElement("canvas"); cv.width = W; cv.height = H;
           const g = cv.getContext("2d");
           const v = document.querySelector("video");
-          if (v && v.videoWidth) {  // in case the camera feed sits behind a transparent canvas
+          if (v && v.videoWidth) {
             const k = Math.max(W / v.videoWidth, H / v.videoHeight), w = v.videoWidth * k, h = v.videoHeight * k;
             g.save(); g.translate(W, 0); g.scale(-1, 1); g.drawImage(v, (W - w) / 2, (H - h) / 2, w, h); g.restore();
           }
@@ -250,11 +354,8 @@
         }
         let lastShot = null;
         $("curse").addEventListener("click", () => {
-          try {
-            lastShot = snap();
-            $("shot").src = lastShot;
-            $("preview").classList.add("on");
-          } catch (err) { log("photo failed: " + err.message); }
+          try { lastShot = snap(); $("shot").src = lastShot; $("preview").classList.add("on"); }
+          catch (err) { log("photo failed: " + err.message); }
         });
         $("share").addEventListener("click", () => {
           if (!lastShot) return;
