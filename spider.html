@@ -45,6 +45,16 @@
       #mute { top: 14px; right: 14px; font-size: 26px; background: #0008; color: #fff; border: 1px solid #fff5;
               border-radius: 24px; padding: 4px 10px; display: none; }
       #mute.on { display: block; }
+      #menu { inset: 0; background: rgba(0,0,0,0.86); display: none; flex-direction: column; align-items: center;
+              justify-content: center; gap: 14px; color: #ff2a1a; font-size: 10vw; text-shadow: 0 0 14px #000; }
+      #menu.on { display: flex; }
+      #menu .card { font-family: inherit; font-size: 8vw; width: 78vw; padding: 12px; border-radius: 18px; border: 2px solid #ff2a1a;
+                    background: #2a0505; color: #fff; box-shadow: 0 0 14px #ff2a1a88; }
+      #menu .card small { display: block; font-family: system-ui, sans-serif; font-size: 3.6vw; color: #ccc; margin-top: 4px; }
+      #menu .card:disabled { opacity: 0.45; }
+      #again { top: 14px; left: 14px; font: 16px system-ui, sans-serif; background: #0008; color: #fff; border: 1px solid #fff5;
+               border-radius: 24px; padding: 7px 12px; display: none; }
+      #again.on { display: block; }
       #dbg { left: 8px; bottom: 8px; color: #0f0; font: 13px monospace; background: #000a; padding: 4px 8px; }
     </style>
   </head>
@@ -59,6 +69,12 @@
     <div id="caption" class="ui">don't look behind you...</div>
     <button id="curse" class="ui">Take the curse home</button>
     <button id="mute" class="ui">🔊</button>
+    <button id="again" class="ui">☰ Choose another</button>
+    <div id="menu" class="ui">Choose your nightmare
+      <button class="card" data-mode="spiders">🕷️ Spiders<small>something is behind you...</small></button>
+      <button class="card" data-mode="mummy">🧟 Mummy<small>wrapped in the curse of the tomb</small></button>
+      <button class="card" data-mode="worms" disabled>🪱 Worms<small>coming soon... open wide</small></button>
+    </div>
     <div id="start" class="ui">Tap to enter...<br>if you dare<small>turn your sound on</small></div>
     <div id="preview" class="ui">
       <img id="shot" alt="Your cursed photo">
@@ -69,16 +85,18 @@
     <script type="module">
       import { onStart } from "@needle-tools/engine";
       import { Quaternion, Vector3, Group, Mesh, BufferGeometry, Float32BufferAttribute,
-               MeshBasicMaterial, CylinderGeometry, DoubleSide } from "three";
+               MeshBasicMaterial, CylinderGeometry, DoubleSide, CanvasTexture, SRGBColorSpace } from "three";
+      import { FaceMeshTexture, FaceFilterRoot } from "@needle-tools/facefilter";
 
       // ================= SETTINGS YOU CAN PLAY WITH =================
       // Positions are x, y, z in head space: y = up, z = toward the camera.
       const S = {
-        SMALL_SCALE: 0.65,                                 // the little spider on your head
+        SMALL_SCALE: 0.55,                                 // the little spider on your head
         ENTRANCE_SECONDS: 1.6,  ENTRANCE_DISTANCE: 0.35,
         BREATH_SECONDS: 2.4,    CHEW_EVERY: 3.5,
         CYCLE_START: 3.0,       CYCLE_SECONDS: 24.5,
-        GIANT_SCALE: 3.2,  GIANT_PEEK: [0, -0.12, -0.16],  GIANT_RISE: 0.12,  GIANT_TILT: 0.3,
+        GIANT_SCALE: 3.2,  GIANT_PEEK: [0, -0.08, -0.16],  GIANT_RISE: 0.16,  GIANT_TILT: 0.3,
+        GIANT_SOLID: true,                                 // body can't be cut by the invisible head once it has risen
         EYES_RISE: 0.12,
         WEB_POS: [0, -0.17, 0.09],  WEB_RADIUS: 0.09,       // last number = face depth (toward camera)
         FACE_CURVE: 4,                                     // how sharply the face curves away (web + babies wrap it)
@@ -90,7 +108,13 @@
         CURSE_BUTTON_AT: 7.5,
         CAPTIONS: [[0, 4.5, "don't look behind you..."], [10.5, 13, "they're hatching..."], [18.5, 23.5, "you're one of us now..."]],
         VOLUME: 0.9,
+        // ---- Mummy mode ----
+        MUMMY_WRAP_SECONDS: 2.5,                           // bandages wind on, chin to forehead
+        MUMMY_SPIDERS: 8,                                  // spiders crawling out from under the wraps
+        MUMMY_CYCLE: 20,
+        MUMMY_CAPTIONS: [[2.5, 6.5, "the curse of the tomb..."], [11, 15, "something's under the wraps..."]],
       };
+      const MODE_PARAM = new URLSearchParams(location.search).get("mode");   // ?mode=mummy skips the menu
       //   0-3 eyes | 3-4.2 giant rises | 4.5-7.5 rappel | 7.5-10.5 web | 10.5-17.5 babies roam
       //   12.5-13.7 giant sinks | 13-15.5 mom climbs up | 16.5-17.5 babies hide in your hair
       //   18-18.8 legs burst from under your chin | 18.8-23.5 you ARE the spider | 23.5-24.3 legs retract
@@ -164,6 +188,107 @@
           while (t < end) { noise(t, "highpass", rand(2500, 5500), 1, rand(0.08, 0.22), 0.002, 0.004, 0.02); t += rand(0.02, 0.09) / density; }
         },
       };
+      function makeMummyPainter(W, H, seed) {
+        let s = seed >>> 0;
+        const rnd = (a = 0, b = 1) => { s = (s * 1664525 + 1013904223) >>> 0; return a + (s / 4294967296) * (b - a); };
+        // Face texture landmarks (procreate layout, canvas fractions)
+        const EYES = [[0.312, 0.352], [0.688, 0.352]], MOUTH = [0.5, 0.625];
+        const strips = [];
+        const N = 30;
+        for (let i = 0; i < N; i++) {
+          strips.push({
+            y: 0.06 + (i + rnd(-0.35, 0.35)) * (0.86 / N),
+            angle: (rnd() < 0.2 ? rnd(-0.5, 0.5) : rnd(-0.16, 0.16)),   // mostly wrapped around, a few diagonals
+            w: rnd(0.045, 0.075) * H,
+            tone: rnd(-40, 5),
+            sag: rnd(-0.03, 0.03),
+            stains: Array.from({ length: Math.floor(rnd(2, 7)) }, () => [rnd(-0.5, 0.5), rnd(-0.4, 0.4), rnd(0.03, 0.09), rnd(0.25, 0.6)]),
+            fibers: Array.from({ length: 6 }, () => [rnd(-0.45, 0.45), rnd(0.2, 0.9), rnd(0.03, 0.12)]),
+          });
+        }
+        strips.sort((a, b) => b.y - a.y);          // wrap from chin upward
+        const jag = (cx, cy, rx, ry, k) => {        // irregular torn edge: smooth wobble + small tears
+          const p1 = rnd(0, 6.3), p2 = rnd(0, 6.3), p3 = rnd(0, 6.3), pts = [];
+          for (let i = 0; i < 64; i++) {
+            const a = (i / 64) * Math.PI * 2;
+            const r = 1 + k * (0.5 * Math.sin(2 * a + p1) + 0.3 * Math.sin(3 * a + p2) + 0.2 * Math.sin(7 * a + p3)) + rnd(-0.04, 0.04);
+            pts.push([cx + Math.cos(a) * rx * r, cy + Math.sin(a) * ry * r]);
+          }
+          return pts;
+        };
+        const holes = [
+          jag(EYES[0][0] * W, EYES[0][1] * H, 0.075 * W, 0.05 * H, 0.18),
+          jag(EYES[1][0] * W, EYES[1][1] * H, 0.075 * W, 0.05 * H, 0.18),
+          jag(MOUTH[0] * W, MOUTH[1] * H, 0.12 * W, 0.058 * H, 0.2),
+        ];
+        const path = (ctx, pts) => { ctx.beginPath(); pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.closePath(); };
+
+        return function paint(ctx, count) {
+          ctx.clearRect(0, 0, W, H);
+          ctx.globalCompositeOperation = "source-over";
+          for (let i = 0; i < Math.min(count, strips.length); i++) {
+            const st = strips[i];
+            ctx.save();
+            ctx.translate(W / 2, st.y * H);
+            ctx.rotate(st.angle);
+            const L = W * 0.75, w = st.w;
+            // shadow cast on the layer below
+            ctx.fillStyle = "rgba(30, 20, 8, 0.35)";
+            ctx.fillRect(-L, -w / 2 + w * 0.18, 2 * L, w);
+            // cloth body: darker edges, lighter middle = rounded look
+            const g = ctx.createLinearGradient(0, -w / 2, 0, w / 2);
+            const c = (v) => `rgb(${Math.round(v[0] + st.tone)}, ${Math.round(v[1] + st.tone)}, ${Math.round(v[2] + st.tone)})`;
+            g.addColorStop(0, c([128, 112, 80])); g.addColorStop(0.25, c([196, 182, 146]));
+            g.addColorStop(0.6, c([208, 196, 160])); g.addColorStop(1, c([118, 100, 68]));
+            ctx.fillStyle = g;
+            ctx.beginPath();                       // slightly sagging cloth instead of a perfect plank
+            ctx.moveTo(-L, -w / 2); ctx.quadraticCurveTo(0, -w / 2 + st.sag * H, L, -w / 2);
+            ctx.lineTo(L, w / 2); ctx.quadraticCurveTo(0, w / 2 + st.sag * H, -L, w / 2); ctx.closePath(); ctx.fill();
+            // woven fibers
+            for (const [fy, alpha, lw] of st.fibers) {
+              ctx.strokeStyle = `rgba(110, 92, 60, ${alpha * 0.18})`; ctx.lineWidth = lw * w * 0.12;
+              ctx.beginPath(); ctx.moveTo(-L, fy * w); ctx.lineTo(L, fy * w + (alpha - 0.5) * 6); ctx.stroke();
+            }
+            // grime stains
+            for (const [sx, sy, r, a] of st.stains) {
+              const rg = ctx.createRadialGradient(sx * W, sy * w, 0, sx * W, sy * w, r * W);
+              rg.addColorStop(0, `rgba(85, 55, 20, ${a})`); rg.addColorStop(0.6, `rgba(95, 65, 28, ${a * 0.4})`); rg.addColorStop(1, "rgba(95, 62, 25, 0)");
+              ctx.fillStyle = rg; ctx.fillRect(sx * W - r * W, -w / 2, 2 * r * W, w);
+            }
+            // frayed edges
+            ctx.strokeStyle = "rgba(200, 188, 150, 0.8)"; ctx.lineWidth = 1.5;
+            for (let k = 0; k < 40; k++) {
+              const x = -L + (k / 40) * 2 * L + (k * 37 % 11), side = k % 2 ? -1 : 1;
+              ctx.beginPath(); ctx.moveTo(x, side * w / 2); ctx.lineTo(x + ((k * 13) % 7) - 3, side * (w / 2 + 3 + (k * 7) % 6)); ctx.stroke();
+            }
+            ctx.restore();
+          }
+          // tear out the eye and mouth holes
+          ctx.globalCompositeOperation = "destination-out";
+          holes.forEach(h => { path(ctx, h); ctx.fill(); });
+          // dark, damp rims around the holes (only where cloth exists)
+          ctx.globalCompositeOperation = "source-atop";
+          ctx.lineWidth = 0.03 * W; ctx.strokeStyle = "rgba(45, 28, 10, 0.55)";
+          holes.forEach(h => { path(ctx, h); ctx.stroke(); });
+          ctx.globalCompositeOperation = "source-over";
+        };
+      }
+
+      SFX.moan = function () {   // low, wavering groan from inside the wraps
+        const t = ac.currentTime, f = ac.createBiquadFilter(), g = ac.createGain();
+        f.type = "bandpass"; f.Q.value = 3; f.frequency.setValueAtTime(620, t); f.frequency.exponentialRampToValueAtTime(260, t + 2.2);
+        env(g, t, 0.28, 0.4, 0.8, 1.3); f.connect(g); g.connect(master);
+        const vib = ac.createOscillator(), vg = ac.createGain(); vib.frequency.value = 5; vg.gain.value = 3; vib.connect(vg); vib.start(t); vib.stop(t + 2.6);
+        [1, 1.012].forEach(k => {
+          const o = ac.createOscillator(); o.type = "sawtooth";
+          o.frequency.setValueAtTime(110 * k, t); o.frequency.exponentialRampToValueAtTime(78 * k, t + 2.4);
+          vg.connect(o.frequency); o.connect(f); o.start(t); o.stop(t + 2.6);
+        });
+      };
+      SFX.swish = function () {   // cloth being pulled tight
+        noise(ac.currentTime, "bandpass", rand(1200, 2200), 0.9, 0.12, 0.03, 0.02, 0.12);
+      };
+
       const play = (name, ...args) => { if (ac && !muted) try { SFX[name](...args); } catch (e) {} };
 
       // =================== MOTION HELPERS ===================
@@ -194,6 +319,12 @@
                     FangL: get("FangL"), FangR: get("FangR") };
         LEGS.forEach(n => r[n] = get(n));
         return r.Torso && r.Abdomen && LEGS.every(n => r[n]) ? r : null;
+      }
+      // Draw a rig's body (not its legs) before the face filter's invisible head so the head can't cut holes in it.
+      function setBodySolid(r, solid) {
+        if (!r || r._solid === solid) return;
+        r._solid = solid;
+        r.Torso.o.traverse(o => { if (o.isMesh) o.renderOrder = solid ? -500 : 0; });
       }
       const newState = off => ({ nextTwitch: 0, leg: null, start: -99, chewOffset: off, gaitSpeed: 9 });
 
@@ -288,6 +419,9 @@
         let wasShown = false, start = -99, lastT = performance.now() / 1000, prevC = -1, prevSince = -1;
         const stSmall = newState(0), stGiant = newState(1.3), stYou = newState(2.1);
         let eyesHome = null;
+        let MODE = null;                                   // null = menu, "spiders", "mummy"
+        let mummy = null, mummyTex = null, mctx = null, paintMummy = null;
+        let mStart = 0, mWasOn = false, mPainted = -1, mPrevM = -1, lastSkitter = 0;
 
         function build() {
           const root = context.scene.getObjectByName("SpiderRig");
@@ -313,12 +447,23 @@
             eyesHome = small.Torso.p.clone().applyQuaternion(qTilt).multiplyScalar(S.GIANT_SCALE).add(v3(S.GIANT_PEEK));
           }
 
-          for (let i = 0; i < S.BABIES; i++) {
+          for (let i = 0; i < Math.max(S.BABIES, S.MUMMY_SPIDERS); i++) {
             const b = root.clone(true); b.name = "Baby" + i; parent.add(b); b.visible = false;
-            b.scale.setScalar(rand(...S.BABY_SIZE));
+            const size = rand(...S.BABY_SIZE); b.scale.setScalar(size);
             const st = newState(rand(0, 3)); st.gaitSpeed = rand(10, 14);
-            babies.push({ r: collect(b, rest), st, alive: false, delay: rand(0, 0.8), hideX: rand(-0.06, 0.06) });
+            babies.push({ r: collect(b, rest), st, size, alive: false, delay: rand(0, 0.8), hideX: rand(-0.06, 0.06) });
           }
+
+          // Mummy wrap: a painted texture that rides on the tracked face mesh
+          try {
+            const cv = document.createElement("canvas"); cv.width = cv.height = 1024;
+            mctx = cv.getContext("2d"); paintMummy = makeMummyPainter(1024, 1024, 1234);
+            mummyTex = new CanvasTexture(cv); mummyTex.flipY = false; mummyTex.colorSpace = SRGBColorSpace;
+            mummy = new FaceMeshTexture({ layout: "procreate", texture: { texture: mummyTex } });
+            parent.addComponent(mummy);
+            const ffr = parent.getComponent(FaceFilterRoot);          // make sure the filter feeds it face data
+            if (ffr && Array.isArray(ffr._behaviours) && !ffr._behaviours.includes(mummy)) ffr._behaviours.push(mummy);
+          } catch (err) { mummy = null; log("mummy setup failed: " + err.message); }
 
           web = makeWeb(S.WEB_RADIUS); web.position.set(...S.WEB_POS); web.visible = false; parent.add(web);
           const tg = new CylinderGeometry(0.0007, 0.0007, 1, 5); tg.translate(0, 0.5, 0);
@@ -332,7 +477,9 @@
           const t = performance.now() / 1000, dt = Math.min(0.05, t - lastT); lastT = t;
           if (!small && !build()) { log("waiting for spider..."); return; }
 
-          const isShown = shown(small.SpiderRig.o);
+          const faceOn = shown(small.SpiderRig.o.parent);
+          const isShown = faceOn && MODE === "spiders";
+          small.SpiderRig.o.visible = isShown;
           if (isShown && !wasShown) start = AT !== null ? t - (S.CYCLE_START + AT) : t;
           wasShown = isShown;
           if (TIME.jumpTo !== null) { start = t - (S.CYCLE_START + TIME.jumpTo); prevC = TIME.jumpTo; prevSince = 99; TIME.jumpTo = null; }
@@ -389,16 +536,16 @@
           }
 
           // ---------- babies ----------
-          babies.forEach(bb => {
+          babies.forEach((bb, i) => {
             if (!bb.r) return;
-            const B = bb.r.SpiderRig, active = isShown && c >= 10.5 + bb.delay && c < 17.5;
+            const B = bb.r.SpiderRig, active = i < S.BABIES && isShown && c >= 10.5 + bb.delay && c < 17.5;
             if (active && !bb.alive) {                                   // hatch
               bb.alive = true; bb.x = S.WEB_POS[0] + rand(-0.01, 0.01); bb.y = S.WEB_POS[1] + rand(-0.01, 0.01);
               bb.heading = rand(0, 2 * Math.PI); bb.speed = 0; bb.darting = false; bb.timer = rand(0, 0.3);
             }
             if (!active) { bb.alive = false; B.o.visible = false; return; }
             const z = stepBaby(bb, dt, c);
-            B.o.visible = true;
+            B.o.visible = true; B.o.scale.setScalar(bb.size);
             B.o.position.set(bb.x, bb.y, z);
             const dx = Math.cos(bb.heading), dy = Math.sin(bb.heading);
             B.o.quaternion.setFromAxisAngle(Z, Math.atan2(dx, -dy)).multiply(qHang);
@@ -421,6 +568,7 @@
           else if (within(c, 4.2, 12.5))  { gy = 0; }
           else if (within(c, 12.5, 13.7)) { gy = -S.GIANT_RISE * smooth((c - 12.5) / 1.2); gmode = "flail"; }
           G.o.visible = isShown && gy !== null;
+          setBodySolid(giant, S.GIANT_SOLID && within(c, 4.2, 12.5));   // solid only once it has fully risen
           if (G.o.visible) {
             G.o.position.set(S.GIANT_PEEK[0], S.GIANT_PEEK[1] + gy, S.GIANT_PEEK[2]);
             G.o.quaternion.copy(G.q).multiply(qTilt);
@@ -446,8 +594,62 @@
           if (cap) $("caption").textContent = cap[2];
           $("caption").classList.toggle("on", !!cap);
           $("curse").classList.toggle("on", isShown && since > S.CURSE_BUTTON_AT);
+          // ================= MUMMY MODE =================
+          const mummyOn = faceOn && MODE === "mummy";
+          if (mummyOn && !mWasOn) { mStart = t; mPainted = -1; mPrevM = -1; babies.forEach(bb => bb.m = null); }
+          mWasOn = mummyOn;
+          if (mummy && mummy.mesh) {
+            mummy.mesh.visible = mummyOn;
+            if (mummy.material) { mummy.material.depthTest = false; mummy.material.depthWrite = false; }
+          }
+          if (mummyOn) {
+            const m = t - mStart, mc = m % S.MUMMY_CYCLE, prevMc = mPrevM < 0 ? -1 : mPrevM % S.MUMMY_CYCLE;
+            const crossed = at => (mPrevM < 0 ? -1 : prevMc) < at && mc >= at && mc >= prevMc;
+            // wind the bandages on, strip by strip
+            const want = Math.min(30, Math.ceil(Math.min(1, m / S.MUMMY_WRAP_SECONDS) * 30));
+            if (want !== mPainted && mctx) {
+              paintMummy(mctx, want); mummyTex.needsUpdate = true;
+              if (want > mPainted && want % 2 === 0) play("swish");
+              mPainted = want;
+            }
+            if (crossed(S.MUMMY_WRAP_SECONDS) || crossed(11.5)) play("moan");
+            // spiders crawl out from under the wraps, wander, and slip back under
+            babies.forEach((bb, i) => {
+              if (!bb.r || i >= S.MUMMY_SPIDERS) return;
+              const B = bb.r.SpiderRig;
+              if (!bb.m) bb.m = { alive: false, next: S.MUMMY_WRAP_SECONDS + 0.8 + rand(0, 3), age: 0, life: 0 };
+              const st = bb.m;
+              if (!st.alive && m >= st.next) {
+                st.alive = true; st.age = 0; st.life = rand(3, 7);
+                bb.x = S.BABY_ZONE.x + rand(-0.04, 0.04); bb.y = S.BABY_ZONE.y + rand(-0.05, 0.05);
+                bb.heading = rand(0, 2 * Math.PI); bb.speed = 0; bb.darting = true; bb.timer = rand(0.2, 0.6);
+                bb.targetSpeed = rand(...S.BABY_SPEED);
+                if (t - lastSkitter > 0.8) { play("skitter", 0.5, 1.2); lastSkitter = t; }
+              }
+              if (st.alive) {
+                st.age += dt;
+                if (st.age > st.life) { st.alive = false; st.next = m + rand(0.5, 2.5); }
+              }
+              if (!st.alive) { B.o.visible = false; return; }
+              const z = stepBaby(bb, dt, 0);
+              B.o.visible = true;
+              B.o.scale.setScalar(bb.size * Math.min(1, st.age / 0.3, (st.life - st.age) / 0.3));
+              B.o.position.set(bb.x, bb.y, z);
+              const dx = Math.cos(bb.heading), dy = Math.sin(bb.heading);
+              B.o.quaternion.setFromAxisAngle(Z, Math.atan2(dx, -dy)).multiply(qHang);
+              animateBody(bb.r, bb.st, t, bb.speed > 0.01 ? "walk" : "idle");
+            });
+            const mcap = S.MUMMY_CAPTIONS.find(([a, b]) => within(mc, a, b));
+            if (mcap) $("caption").textContent = mcap[2];
+            $("caption").classList.toggle("on", !!mcap);
+            $("curse").classList.toggle("on", m > 5);
+            mPrevM = m;
+          } else if (MODE === "mummy") {
+            babies.forEach(bb => { if (bb.r) bb.r.SpiderRig.o.visible = false; });
+          }
+
           prevC = c;
-          if (debug) log(`ok | shown=${isShown} | t=${since.toFixed(1)} | cycle=${c.toFixed(1)} | audio=${ac ? ac.state : "off"}`);
+          if (debug) log(`ok | mode=${MODE} | face=${faceOn} | mummy=${mummy ? (mummy.mesh ? "mesh" : "no mesh") : "none"} | t=${since.toFixed(1)} | cycle=${c.toFixed(1)} | audio=${ac ? ac.state : "off"}`);
         }
         requestAnimationFrame(tick);
 
@@ -505,9 +707,20 @@
         }
 
         // ---------- entry screen (unlocks sound), mute, tap to replay ----------
+        function selectMode(m) {
+          MODE = m; wasShown = false; mWasOn = false;
+          $("menu").classList.remove("on"); $("again").classList.add("on");
+        }
         $("start").addEventListener("click", () => {
           initAudio(); $("start").classList.add("off"); $("mute").classList.add("on");
-          start = performance.now() / 1000; prevC = -1; prevSince = -1;
+          if (MODE_PARAM === "spiders" || MODE_PARAM === "mummy") selectMode(MODE_PARAM);
+          else $("menu").classList.add("on");
+        });
+        document.querySelectorAll("#menu .card").forEach(b =>
+          b.addEventListener("click", () => { if (!b.disabled) selectMode(b.dataset.mode); }));
+        $("again").addEventListener("click", () => {
+          MODE = null; $("again").classList.remove("on"); $("menu").classList.add("on");
+          $("caption").classList.remove("on"); $("curse").classList.remove("on");
         });
         $("mute").addEventListener("click", () => {
           muted = !muted; if (master) master.gain.value = muted ? 0 : S.VOLUME;
@@ -516,6 +729,7 @@
         window.addEventListener("pointerdown", e => {
           if (e.target.closest && e.target.closest(".ui")) return;
           if (tuneMode) return;
+          if (MODE === "mummy") { mWasOn = false; return; }        // re-wrap from the start
           start = performance.now() / 1000; prevC = -1; prevSince = -1;
         });
 
