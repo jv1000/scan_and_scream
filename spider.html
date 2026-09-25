@@ -85,13 +85,14 @@
     <script type="module">
       import { onStart } from "@needle-tools/engine";
       import { Quaternion, Vector3, Group, Mesh, BufferGeometry, Float32BufferAttribute,
-               MeshBasicMaterial, CylinderGeometry, DoubleSide, CanvasTexture, SRGBColorSpace } from "three";
+               MeshBasicMaterial, CylinderGeometry, DoubleSide, CanvasTexture, SRGBColorSpace, NoColorSpace,
+               RepeatWrapping, SphereGeometry } from "three";
       import { FaceMeshTexture, FaceFilterRoot } from "@needle-tools/facefilter";
 
       // ================= SETTINGS YOU CAN PLAY WITH =================
       // Positions are x, y, z in head space: y = up, z = toward the camera.
       const S = {
-        SMALL_SCALE: 0.65,                                 // the little spider on your head
+        SMALL_SCALE: 0.55,                                 // the little spider on your head
         ENTRANCE_SECONDS: 1.6,  ENTRANCE_DISTANCE: 0.35,
         BREATH_SECONDS: 2.4,    CHEW_EVERY: 3.5,
         CYCLE_START: 3.0,       CYCLE_SECONDS: 24.5,
@@ -113,6 +114,11 @@
         MUMMY_SPIDERS: 8,                                  // spiders crawling out from under the wraps
         MUMMY_CYCLE: 20,
         MUMMY_CAPTIONS: [[2.5, 6.5, "the curse of the tomb..."], [11, 15, "something's under the wraps..."]],
+        HOOD_CENTER: [0, -0.10, -0.03],                    // bandage hood over hair and ears (an egg around your head)
+        HOOD_RADII: [0.11, 0.15, 0.13],                    // [width, height, depth] half-sizes in meters
+        HOOD_SCALE: 1.0,                                   // quick overall size knob (tune panel)
+        HOOD_FOREHEAD_LAT: 0.3,                            // below this band the front stays open for your face
+        HOOD_FACE_GAP: 1.2,                                // radians of open face on each side of center
       };
       const MODE_PARAM = new URLSearchParams(location.search).get("mode");   // ?mode=mummy skips the menu
       //   0-3 eyes | 3-4.2 giant rises | 4.5-7.5 rappel | 7.5-10.5 web | 10.5-17.5 babies roam
@@ -200,10 +206,11 @@
             y: 0.06 + (i + rnd(-0.35, 0.35)) * (0.86 / N),
             angle: (rnd() < 0.2 ? rnd(-0.5, 0.5) : rnd(-0.16, 0.16)),   // mostly wrapped around, a few diagonals
             w: rnd(0.045, 0.075) * H,
-            tone: rnd(-40, 5),
+            tone: rnd(-35, 5),
             sag: rnd(-0.03, 0.03),
             stains: Array.from({ length: Math.floor(rnd(2, 7)) }, () => [rnd(-0.5, 0.5), rnd(-0.4, 0.4), rnd(0.03, 0.09), rnd(0.25, 0.6)]),
             fibers: Array.from({ length: 6 }, () => [rnd(-0.45, 0.45), rnd(0.2, 0.9), rnd(0.03, 0.12)]),
+            blood: rnd() < 0.35 ? [rnd(-0.35, 0.35), rnd(0.08, 0.22), rnd(0.35, 0.7)] : null,
           });
         }
         strips.sort((a, b) => b.y - a.y);          // wrap from chin upward
@@ -221,11 +228,22 @@
           jag(EYES[1][0] * W, EYES[1][1] * H, 0.075 * W, 0.05 * H, 0.18),
           jag(MOUTH[0] * W, MOUTH[1] * H, 0.12 * W, 0.058 * H, 0.2),
         ];
+        const drips = [];
+        [[EYES[0][0], EYES[0][1] + 0.045], [EYES[1][0], EYES[1][1] + 0.045], [MOUTH[0] - 0.08, MOUTH[1] + 0.04], [MOUTH[0] + 0.07, MOUTH[1] + 0.045]]
+          .forEach(([x, y]) => { for (let k = 0; k < 2; k++) drips.push([x + rnd(-0.03, 0.03), y, rnd(0.05, 0.16), rnd(5, 11)]); });
+        const splats = Array.from({ length: 26 }, () => [MOUTH[0] + rnd(-0.18, 0.18), MOUTH[1] + rnd(-0.08, 0.14), rnd(2, 7)]);
         const path = (ctx, pts) => { ctx.beginPath(); pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.closePath(); };
 
         return function paint(ctx, count) {
           ctx.clearRect(0, 0, W, H);
           ctx.globalCompositeOperation = "source-over";
+          if (count > 0) {                             // older, greyer wraps underneath: no skin shows through
+            const reveal = Math.min(1, count / strips.length);
+            ctx.fillStyle = "rgb(128, 122, 106)";
+            ctx.fillRect(0, H * (1 - reveal), W, H * reveal);
+            ctx.strokeStyle = "rgba(70, 62, 48, 0.35)"; ctx.lineWidth = 6;
+            for (let y = H * (1 - reveal); y < H; y += 34) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y + 18); ctx.stroke(); }
+          }
           for (let i = 0; i < Math.min(count, strips.length); i++) {
             const st = strips[i];
             ctx.save();
@@ -238,8 +256,8 @@
             // cloth body: darker edges, lighter middle = rounded look
             const g = ctx.createLinearGradient(0, -w / 2, 0, w / 2);
             const c = (v) => `rgb(${Math.round(v[0] + st.tone)}, ${Math.round(v[1] + st.tone)}, ${Math.round(v[2] + st.tone)})`;
-            g.addColorStop(0, c([128, 112, 80])); g.addColorStop(0.25, c([196, 182, 146]));
-            g.addColorStop(0.6, c([208, 196, 160])); g.addColorStop(1, c([118, 100, 68]));
+            g.addColorStop(0, c([165, 158, 140])); g.addColorStop(0.25, c([222, 217, 200]));
+            g.addColorStop(0.6, c([234, 230, 216])); g.addColorStop(1, c([150, 142, 122]));
             ctx.fillStyle = g;
             ctx.beginPath();                       // slightly sagging cloth instead of a perfect plank
             ctx.moveTo(-L, -w / 2); ctx.quadraticCurveTo(0, -w / 2 + st.sag * H, L, -w / 2);
@@ -252,11 +270,20 @@
             // grime stains
             for (const [sx, sy, r, a] of st.stains) {
               const rg = ctx.createRadialGradient(sx * W, sy * w, 0, sx * W, sy * w, r * W);
-              rg.addColorStop(0, `rgba(85, 55, 20, ${a})`); rg.addColorStop(0.6, `rgba(95, 65, 28, ${a * 0.4})`); rg.addColorStop(1, "rgba(95, 62, 25, 0)");
+              rg.addColorStop(0, `rgba(120, 96, 52, ${a * 0.8})`); rg.addColorStop(0.6, `rgba(130, 105, 60, ${a * 0.3})`); rg.addColorStop(1, "rgba(130, 105, 60, 0)");
               ctx.fillStyle = rg; ctx.fillRect(sx * W - r * W, -w / 2, 2 * r * W, w);
             }
+            // old blood soaked into this strip
+            if (st.blood) {
+              const [bx, br, ba] = st.blood;
+              ctx.save(); ctx.scale(1, 0.35);
+              const bg = ctx.createRadialGradient(bx * W, 0, 0, bx * W, 0, br * W);
+              bg.addColorStop(0, `rgba(105, 8, 8, ${ba})`); bg.addColorStop(0.5, `rgba(120, 15, 12, ${ba * 0.6})`); bg.addColorStop(1, "rgba(120, 15, 12, 0)");
+              ctx.fillStyle = bg; ctx.fillRect(bx * W - br * W, -br * W, 2 * br * W, 2 * br * W);
+              ctx.restore();
+            }
             // frayed edges
-            ctx.strokeStyle = "rgba(200, 188, 150, 0.8)"; ctx.lineWidth = 1.5;
+            ctx.strokeStyle = "rgba(235, 230, 214, 0.8)"; ctx.lineWidth = 1.5;
             for (let k = 0; k < 40; k++) {
               const x = -L + (k / 40) * 2 * L + (k * 37 % 11), side = k % 2 ? -1 : 1;
               ctx.beginPath(); ctx.moveTo(x, side * w / 2); ctx.lineTo(x + ((k * 13) % 7) - 3, side * (w / 2 + 3 + (k * 7) % 6)); ctx.stroke();
@@ -270,7 +297,46 @@
           ctx.globalCompositeOperation = "source-atop";
           ctx.lineWidth = 0.03 * W; ctx.strokeStyle = "rgba(45, 28, 10, 0.55)";
           holes.forEach(h => { path(ctx, h); ctx.stroke(); });
+          if (count >= strips.length) {                // blood runs from the eyes and mouth once fully wrapped
+            ctx.lineCap = "round";
+            for (const [x, y, len, wpx] of drips) {
+              const g2 = ctx.createLinearGradient(0, y * H, 0, (y + len) * H);
+              g2.addColorStop(0, "rgba(120, 6, 6, 0.9)"); g2.addColorStop(1, "rgba(90, 4, 4, 0.75)");
+              ctx.strokeStyle = g2; ctx.lineWidth = wpx;
+              ctx.beginPath(); ctx.moveTo(x * W, y * H);
+              ctx.bezierCurveTo(x * W + wpx, (y + len * 0.4) * H, x * W - wpx, (y + len * 0.7) * H, x * W, (y + len) * H); ctx.stroke();
+              ctx.fillStyle = "rgba(95, 4, 4, 0.9)"; ctx.beginPath(); ctx.arc(x * W, (y + len) * H, wpx * 0.9, 0, 7); ctx.fill();
+            }
+            for (const [x, y, r] of splats) { ctx.fillStyle = "rgba(115, 8, 8, 0.7)"; ctx.beginPath(); ctx.arc(x * W, y * H, r, 0, 7); ctx.fill(); }
+          }
           ctx.globalCompositeOperation = "source-over";
+        };
+      }
+      function makeStripPainter(W, H, seed) {
+        let s = seed >>> 0;
+        const rnd = (a = 0, b = 1) => { s = (s * 1664525 + 1013904223) >>> 0; return a + (s / 4294967296) * (b - a); };
+        return function paint(ctx) {
+          const g = ctx.createLinearGradient(0, 0, 0, H);
+          g.addColorStop(0, "rgb(150, 143, 126)"); g.addColorStop(0.25, "rgb(218, 213, 197)");
+          g.addColorStop(0.6, "rgb(230, 226, 212)"); g.addColorStop(1, "rgb(138, 130, 112)");
+          ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+          for (let i = 0; i < 18; i++) {             // fibers
+            ctx.strokeStyle = `rgba(110, 100, 80, ${rnd(0.05, 0.15)})`; ctx.lineWidth = rnd(1, 3);
+            const y = rnd(0, H); ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y + rnd(-4, 4)); ctx.stroke();
+          }
+          for (let i = 0; i < 9; i++) {              // grime
+            const x = rnd(0, W), y = rnd(0, H), r = rnd(20, 70);
+            const rg = ctx.createRadialGradient(x, y, 0, x, y, r);
+            rg.addColorStop(0, `rgba(120, 96, 52, ${rnd(0.2, 0.45)})`); rg.addColorStop(1, "rgba(120, 96, 52, 0)");
+            ctx.fillStyle = rg; ctx.fillRect(x - r, y - r, 2 * r, 2 * r);
+          }
+          for (let i = 0; i < 3; i++) {              // blood smears
+            const x = rnd(0, W), r = rnd(30, 80);
+            ctx.save(); ctx.translate(x, H * rnd(0.3, 0.7)); ctx.scale(1, 0.4);
+            const bg = ctx.createRadialGradient(0, 0, 0, 0, 0, r);
+            bg.addColorStop(0, `rgba(105, 8, 8, ${rnd(0.45, 0.75)})`); bg.addColorStop(1, "rgba(120, 15, 12, 0)");
+            ctx.fillStyle = bg; ctx.fillRect(-r, -r, 2 * r, 2 * r); ctx.restore();
+          }
         };
       }
 
@@ -384,6 +450,37 @@
         return mesh;
       }
 
+      // Bandage hood: ribbons wound around a unit sphere, stretched into an egg by the group's scale.
+      function makeHood(tex) {
+        const group = new Group(), ribbons = [];
+        const mat = new MeshBasicMaterial({ map: tex, side: DoubleSide });
+        let seed = 7; const rr = (a, b) => { seed = (seed * 1664525 + 1013904223) >>> 0; return a + (seed / 4294967296) * (b - a); };
+        let i = 0;
+        for (let lat0 = -0.6; lat0 < 1.36; lat0 += 0.125, i++) {
+          const open = lat0 < S.HOOD_FOREHEAD_LAT;
+          const th0 = open ? S.HOOD_FACE_GAP : -Math.PI, th1 = open ? 2 * Math.PI - S.HOOD_FACE_GAP : Math.PI;
+          const tilt = rr(-0.1, 0.1), phase = rr(0, 6.28), width = rr(0.13, 0.18), lift = 1 + 0.01 * (i % 3) + 0.003 * i, uOff = rr(0, 1);
+          const seg = 64, pos = [], uv = [], idx = [];
+          for (let k = 0; k <= seg; k++) {
+            const th = th0 + (th1 - th0) * k / seg, lat = lat0 + tilt * Math.sin(th + phase);
+            for (const [side, v] of [[-0.5, 0], [0.5, 1]]) {
+              const la = Math.min(1.52, lat + side * width), cl = Math.cos(la);
+              pos.push(Math.sin(th) * cl * lift, Math.sin(la) * lift, Math.cos(th) * cl * lift);
+              uv.push(uOff + (th1 - th0) * (k / seg) * 0.6, v);
+            }
+            if (k < seg) { const q = k * 2; idx.push(q, q + 1, q + 2, q + 1, q + 3, q + 2); }
+          }
+          const geo = new BufferGeometry();
+          geo.setAttribute("position", new Float32BufferAttribute(pos, 3));
+          geo.setAttribute("uv", new Float32BufferAttribute(uv, 2)); geo.setIndex(idx);
+          const m = new Mesh(geo, mat); m.frustumCulled = false; group.add(m); ribbons.push(m);
+        }
+        const cap = new Mesh(new SphereGeometry(1.04, 20, 6, 0, Math.PI * 2, 0, 0.3), mat);   // crown of the head
+        cap.frustumCulled = false; group.add(cap); ribbons.push(cap);
+        group.visible = false;
+        return { group, ribbons };
+      }
+
       // One baby's brain: dart, freeze, dart; wander; turn back at the edge of the face; hide at the end.
       function stepBaby(bb, dt, c) {
         const Zn = S.BABY_ZONE;
@@ -421,7 +518,7 @@
         let eyesHome = null;
         let MODE = null;                                   // null = menu, "spiders", "mummy"
         let mummy = null, mummyTex = null, mctx = null, paintMummy = null;
-        let mStart = 0, mWasOn = false, mPainted = -1, mPrevM = -1, lastSkitter = 0;
+        let mStart = 0, mWasOn = false, mPainted = -1, mPrevM = -1, lastSkitter = 0, hood = null;
 
         function build() {
           const root = context.scene.getObjectByName("SpiderRig");
@@ -458,12 +555,18 @@
           try {
             const cv = document.createElement("canvas"); cv.width = cv.height = 1024;
             mctx = cv.getContext("2d"); paintMummy = makeMummyPainter(1024, 1024, 1234);
-            mummyTex = new CanvasTexture(cv); mummyTex.flipY = false; mummyTex.colorSpace = SRGBColorSpace;
+            mummyTex = new CanvasTexture(cv); mummyTex.flipY = false; mummyTex.colorSpace = NoColorSpace;   // face shader shows raw colors
             mummy = new FaceMeshTexture({ layout: "procreate", texture: { texture: mummyTex } });
             parent.addComponent(mummy);
             const ffr = parent.getComponent(FaceFilterRoot);          // make sure the filter feeds it face data
             if (ffr && Array.isArray(ffr._behaviours) && !ffr._behaviours.includes(mummy)) ffr._behaviours.push(mummy);
           } catch (err) { mummy = null; log("mummy setup failed: " + err.message); }
+          try {
+            const sc = document.createElement("canvas"); sc.width = 1024; sc.height = 128;
+            makeStripPainter(1024, 128, 99)(sc.getContext("2d"));
+            const st = new CanvasTexture(sc); st.colorSpace = SRGBColorSpace; st.wrapS = RepeatWrapping;
+            hood = makeHood(st); parent.add(hood.group);
+          } catch (err) { hood = null; log("hood setup failed: " + err.message); }
 
           web = makeWeb(S.WEB_RADIUS); web.position.set(...S.WEB_POS); web.visible = false; parent.add(web);
           const tg = new CylinderGeometry(0.0007, 0.0007, 1, 5); tg.translate(0, 0.5, 0);
@@ -602,6 +705,16 @@
             mummy.mesh.visible = mummyOn;
             if (mummy.material) { mummy.material.depthTest = false; mummy.material.depthWrite = false; }
           }
+          if (hood) {
+            hood.group.visible = mummyOn;
+            if (mummyOn) {
+              const k = S.HOOD_SCALE;
+              hood.group.position.set(...S.HOOD_CENTER);
+              hood.group.scale.set(S.HOOD_RADII[0] * k, S.HOOD_RADII[1] * k, S.HOOD_RADII[2] * k);
+              const f = Math.min(1, (t - mStart) / S.MUMMY_WRAP_SECONDS);
+              hood.ribbons.forEach((r, i) => r.visible = i < Math.ceil(f * hood.ribbons.length));
+            }
+          }
           if (mummyOn) {
             const m = t - mStart, mc = m % S.MUMMY_CYCLE, prevMc = mPrevM < 0 ? -1 : mPrevM % S.MUMMY_CYCLE;
             const crossed = at => (mPrevM < 0 ? -1 : prevMc) < at && mc >= at && mc >= prevMc;
@@ -665,6 +778,9 @@
             ["Face depth",     () => S.WEB_POS[2],   v => S.WEB_POS[2] = v,   0.03, 0.16, 0.002],
             ["Face curve",     () => S.FACE_CURVE,   v => { S.FACE_CURVE = v; rebuildWeb(); }, 0, 10, 0.1],
             ["Web up/down",    () => S.WEB_POS[1],   v => S.WEB_POS[1] = v,   -0.28, -0.06, 0.002],
+            ["Hood size",      () => S.HOOD_SCALE,   v => S.HOOD_SCALE = v,   0.7, 1.5, 0.01],
+            ["Hood up/down",   () => S.HOOD_CENTER[1], v => S.HOOD_CENTER[1] = v, -0.2, 0.0, 0.002],
+            ["Hood depth",     () => S.HOOD_CENTER[2], v => S.HOOD_CENTER[2] = v, -0.1, 0.05, 0.002],
           ];
           const out = document.createElement("pre");
           out.style.cssText = "margin:6px 0 0;font:11px monospace;color:#0f0;white-space:pre-wrap;";
@@ -672,7 +788,9 @@
             `SMALL_SCALE: ${S.SMALL_SCALE.toFixed(2)},\n` +
             `WEB_POS: [0, ${S.WEB_POS[1].toFixed(3)}, ${S.WEB_POS[2].toFixed(3)}],\n` +
             `FACE_CURVE: ${S.FACE_CURVE.toFixed(1)},\n` +
-            `MOM_OFFSET: [0, ${S.MOM_OFFSET[1].toFixed(3)}, ${S.MOM_OFFSET[2].toFixed(3)}],`;
+            `MOM_OFFSET: [0, ${S.MOM_OFFSET[1].toFixed(3)}, ${S.MOM_OFFSET[2].toFixed(3)}],\n` +
+            `HOOD_CENTER: [0, ${S.HOOD_CENTER[1].toFixed(3)}, ${S.HOOD_CENTER[2].toFixed(3)}],\n` +
+            `HOOD_SCALE: ${S.HOOD_SCALE.toFixed(2)},`;
           const refresh = () => { out.textContent = settingsText(); };
           rows.forEach(([label, get, set, min, max, step]) => {
             const row = document.createElement("label");
