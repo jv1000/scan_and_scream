@@ -41,6 +41,47 @@
   #putback { position: fixed; left: 50%; bottom: calc(150px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%) rotate(-1.5deg); font-size: 22px; display: none; }
   #reticle { position: fixed; left: 50%; top: 50%; width: 26px; height: 26px; margin: -13px 0 0 -13px; border: 2px dashed rgba(233,255,224,0.8);
              border-radius: 50%; pointer-events: none; display: none; box-shadow: 0 0 6px #000, inset 0 0 6px #000; }
+  /* ---- the notebook, opened in your hands ---- */
+  #book { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+          padding: calc(12px + env(safe-area-inset-top, 0px)) 12px calc(12px + env(safe-area-inset-bottom, 0px));
+          background: radial-gradient(ellipse at 50% 45%, rgba(7,9,11,0.55), rgba(7,9,11,0.94) 75%); }
+  #closebook { align-self: flex-end; font-size: 19px; transform: rotate(1.5deg); }
+  #pages { position: relative; width: min(92vw, 440px); height: min(66vh, 620px); perspective: 1700px; touch-action: none; }
+  .page { --line: 38px; position: absolute; inset: 0; overflow: hidden; box-sizing: border-box; padding: 54px 18px 18px 44px;
+          font-family: var(--hand); font-weight: 600; font-size: clamp(22px, 6.1vw, 27px); line-height: var(--line); color: var(--ink);
+          background: linear-gradient(90deg, transparent 33px, rgba(170,40,40,0.35) 33px, rgba(170,40,40,0.35) 35px, transparent 35px),
+                      repeating-linear-gradient(to bottom, transparent 0, transparent calc(var(--line) - 2px), rgba(90,120,170,0.33) calc(var(--line) - 2px), rgba(90,120,170,0.33) var(--line)) 0 16px,
+                      radial-gradient(ellipse at 20% 110%, rgba(120,90,40,0.18), transparent 60%), #efe6cc;
+          border-radius: 3px 12px 12px 3px; box-shadow: inset 10px 0 18px -10px rgba(0,0,0,0.45), 0 12px 30px rgba(0,0,0,0.6);
+          transform-origin: left center; transition: transform 0.75s cubic-bezier(.3,.1,.2,1), opacity 0.75s ease-in, background-color 0.6s; backface-visibility: hidden; }
+  .page.turned { transform: rotateY(-118deg); opacity: 0; pointer-events: none; }
+  .page p { margin: 0; }
+  .page .date { font-family: var(--type); font-weight: 400; font-size: 15px; color: #5a5040; }
+  .page .red { color: var(--red-ink); }
+  .page s { text-decoration-thickness: 3px; text-decoration-color: var(--red-ink); }
+  .page .circle { display: inline-block; border: 3px solid var(--red-ink); border-radius: 50%; padding: 0 12px; line-height: 1.1; transform: rotate(-3deg); color: var(--red-ink); }
+  .page .sketch { float: right; width: 34%; margin: 4px 0 6px 8px; }
+  .page .ring { position: absolute; width: 130px; height: 130px; border-radius: 50%; right: -24px; bottom: 26px; pointer-events: none;
+                background: radial-gradient(circle, transparent 54%, rgba(110,70,30,0.32) 60%, rgba(110,70,30,0.12) 66%, transparent 70%); }
+  .page .old { font-family: "Iowan Old Style", "Palatino", Georgia, serif; font-style: italic; font-weight: 400; font-size: 0.8em; line-height: 1.5;
+               background: #e3d7b6; padding: 14px 16px; margin: 10px -4px; transform: rotate(-1.5deg); box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+               clip-path: polygon(0 3%, 12% 0, 30% 4%, 52% 0, 74% 3%, 100% 0, 98% 100%, 70% 96%, 45% 100%, 20% 97%, 0 100%); }
+  .page .uv { position: absolute; color: #aaff3c; opacity: 0; text-shadow: 0 0 10px #aaff3c, 0 0 2px #aaff3c; transition: opacity 0.9s; transform: rotate(-6deg); pointer-events: none; }
+  #book.uvon .page { background-color: #c9bdf0; }
+  #book.uvon .page .uv { opacity: 1; }
+  .page .writes { color: var(--red-ink); font-size: 1.15em; }
+  .page .writes::after { content: "|"; opacity: 0.6; }
+  .page .writes.done::after { content: ""; }
+  .page .after { opacity: 0; transition: opacity 1.2s; }
+  .page .after.shown { opacity: 1; }
+  .bookhint { margin: 0; font-family: var(--type); font-size: 13px; color: #b9c4bd; }
+  .bookbar { display: flex; gap: 12px; align-items: center; }
+  .bookbar .tape { font-size: 20px; } .bookbar .tape:disabled { opacity: 0.35; }
+  #bookuv { background: #d9ccf7; } #bookuv[aria-pressed="true"] { background: var(--uv); color: #fff; box-shadow: 0 0 18px var(--uv); }
+  #pgnum { margin: 0; font-family: var(--type); font-size: 13px; color: #b9c4bd; }
+  @media (prefers-reduced-motion: reduce) { .page { transition: opacity 0.3s; } .page.turned { transform: none; } }
+  body.reading #caption { display: none; }
+  body.reading #uvbtn, body.reading #putback, body.reading #reticle, body.reading #zoom { visibility: hidden; }
   #dbg { position: fixed; left: 8px; bottom: 8px; font: 12px monospace; color: #0f0; background: #000a; padding: 3px 6px; display: none; }
 </style>
 </head>
@@ -57,7 +98,7 @@
 <div id="door" class="card">
   <div class="sign">Lab 13</div>
   <p>Authorized personnel only. Stand where you have room to turn around.</p>
-  <p class="rev">revision 3</p>
+  <p class="rev">revision 4</p>
   <button id="enter" class="tape">Flip the switch</button>
 </div>
 <div id="outro" class="card hidden">
@@ -68,6 +109,17 @@
     <button id="again" class="tape">Run it again</button>
     <a id="selfie" class="tape" href="https://jv1000.github.io/scan_and_scream/spider.html?mode=lab">Mad Lab selfie</a>
   </div>
+</div>
+<div id="book" class="hidden" role="dialog" aria-label="Dr. Frankenstein's lab notebook">
+  <button id="closebook" class="tape">Close the notebook</button>
+  <div id="pages"></div>
+  <p class="bookhint">swipe or tap the page to turn it</p>
+  <div class="bookbar">
+    <button id="prev" class="tape" aria-label="Previous page">back</button>
+    <button id="bookuv" class="tape" aria-pressed="false">UV lamp: off</button>
+    <button id="next" class="tape" aria-label="Next page">next</button>
+  </div>
+  <p id="pgnum"></p>
 </div>
 <div id="dbg"></div>
 
@@ -363,6 +415,7 @@ function buildLab(T, scene, opts = {}) {
   });
   const book = new T.Mesh(new T.PlaneGeometry(0.62, 0.39), std(0xffffff, { map: nb.tex, roughness: 0.95 }));
   book.rotation.x = -Math.PI / 2 + 0.05; book.rotation.z = 0.12; book.position.set(0.35, 0.955, 0.2); synth.add(book);
+  const bookSpot = new T.Group(); bookSpot.position.copy(book.position); synth.add(bookSpot);     // tap target for the notebook
 
   // ---------------- INSTRUMENT CORNER ----------------
   function screen(parent, x, y, z, w, h, cw, ch) {
@@ -520,6 +573,7 @@ function buildLab(T, scene, opts = {}) {
   function touchable(entry, r, h) { const p = new T.Mesh(new T.CylinderGeometry(r, r, h, 10), hitMat); p.position.y = h / 2;
     p.userData.touch = entry; entry.group.add(p); entry.proxy = p; touchables.push(entry); return entry; }
   for (const jr of jars) touchable(jr, 0.17, 0.42);
+  touchable({ kind: "book", group: bookSpot, cy: 0.02 }, 0.34, 0.12);
   const glasses = [tonic, ink, red, dry].map(v => {
     const uvE = uvLiquids.find(l => l.mat === v.liquid);
     return touchable({ kind: "glass", group: v.group, v, p: v.pour, uvE, uvBase0: uvE ? uvE.base : 0,
@@ -534,7 +588,7 @@ function buildLab(T, scene, opts = {}) {
   const ray = new T.Raycaster();
   function closestHit(entries) {     // tap zones overlap, so pick the thing whose centre is nearest your line of sight, not the nearest zone
     const hits = ray.intersectObjects(entries.map(e => e.proxy), false); let best = null, bd = Infinity;
-    for (const h of hits) { const e = h.object.userData.touch; e.group.getWorldPosition(_t2); _t2.y += (e.p ? e.p.rimH : 0.26) / 2;
+    for (const h of hits) { const e = h.object.userData.touch; e.group.getWorldPosition(_t2); _t2.y += e.cy !== undefined ? e.cy : (e.p ? e.p.rimH : 0.26) / 2;
       const d = ray.ray.distanceSqToPoint(_t2); if (d < bd) { bd = d; best = e; } }
     return best;
   }
@@ -694,6 +748,7 @@ function buildLab(T, scene, opts = {}) {
     cam.updateMatrixWorld(); ray.setFromCamera(ndc, cam);
     const e = closestHit(touchables.filter(e => !e.gone && !(held && held.gl === e))); if (!e) return null;
     if (e.kind === "jar") { jostle(e, lastT); fire("clink"); fire("squish"); say(pickOne(JAR_LINES)); return "jar"; }
+    if (e.kind === "book") { putBack(); fire("openBook"); return "book"; }
     pick(e, lastT); fire("clink"); say("tilt your phone to pour... aim the circle at another glass"); return "glass";
   }
 
@@ -864,6 +919,8 @@ function buildLab(T, scene, opts = {}) {
     trickle() { noise(ac.currentTime, "bandpass", 600 + Math.random() * 900, 8, 0.12, 0.004, 0.02, 0.06); },
     hiss() { noise(ac.currentTime, "highpass", 4000, 0.7, 0.25, 0.05, 0.8, 0.9); },
     fizz() { const t = ac.currentTime; for (let i = 0; i < 14; i++) noise(t + Math.random() * 0.9, "highpass", 5000 + Math.random() * 3000, 1, 0.08, 0.002, 0.005, 0.03); },
+    page() { const t = ac.currentTime, f = noise(t, "bandpass", 3000, 0.9, 0.16, 0.02, 0.08, 0.25); f.frequency.setValueAtTime(3000, t); f.frequency.exponentialRampToValueAtTime(800, t + 0.35); },
+    scratch() { noise(ac.currentTime, "highpass", 3500 + Math.random() * 2000, 2, 0.05, 0.003, 0.02, 0.05); },
     splat() { noise(ac.currentTime, "lowpass", 700, 1, 0.12, 0.003, 0.02, 0.12); },
   };
   const play = n => { if (on()) try { SFX[n](); } catch (e) {} };
@@ -896,7 +953,7 @@ function buildLab(T, scene, opts = {}) {
   function begin() {
     lab.reset(); lab.setPower(false); lab.setUV(false); fired = {}; lurk = { done: false, lunging: -1 };
     $("outro").classList.add("hidden"); t0 = clock; running = true; facedLab = false;
-    exploring = false; uvOn = false; $("uvbtn").style.display = "none"; $("uvbtn").setAttribute("aria-pressed", "false"); $("uvbtn").textContent = "UV lamp: off";
+    resetBook(); exploring = false; uvOn = false; $("uvbtn").style.display = "none"; $("uvbtn").setAttribute("aria-pressed", "false"); $("uvbtn").textContent = "UV lamp: off";
   }
   $("enter").addEventListener("click", async () => {
     startAudio(); play("click");
@@ -912,12 +969,93 @@ function buildLab(T, scene, opts = {}) {
     play("click"); lab.reset(); lab.setPower(true); lab.setUV(false); lab.setFlat(null);
     running = false; exploring = true; exploreStart = clock; lastGhost = lab._t || 0; prevECycle = -1; lurk = { done: false, lunging: -1 };
     $("outro").classList.add("hidden"); $("uvbtn").style.display = "block"; $("caption").classList.remove("on");
-    showCaption("tap the jars and the glassware... some of them tap back", 5);
+    resetBook(); $("bookuv").setAttribute("aria-pressed", "false"); $("bookuv").textContent = "UV lamp: off"; $("book").classList.remove("uvon");
+    showCaption("tap the jars, the glassware, the notebook... some of them tap back", 5);
   });
-  $("uvbtn").addEventListener("click", () => {
+  function toggleUV() {                  // one lamp: the room and the notebook both answer to it
     uvOn = !uvOn; lab.setUV(uvOn); play("click");
-    $("uvbtn").setAttribute("aria-pressed", String(uvOn)); $("uvbtn").textContent = uvOn ? "UV lamp: on" : "UV lamp: off";
+    for (const id of ["uvbtn", "bookuv"]) { $(id).setAttribute("aria-pressed", String(uvOn)); $(id).textContent = uvOn ? "UV lamp: on" : "UV lamp: off"; }
+    $("book").classList.toggle("uvon", uvOn);
+  }
+  $("uvbtn").addEventListener("click", toggleUV);
+  $("bookuv").addEventListener("click", toggleUV);
+
+  // ---- the notebook (Keep exploring): tap it on the bench and it opens in your hands ----
+  const legs = n => { let d = ""; for (let i = 0; i < n; i++) { const a = (i / n) * 6.283 + 0.2, x = 50 + Math.cos(a) * 20, y = 50 + Math.sin(a) * 15;
+    d += `M${x.toFixed(0)} ${y.toFixed(0)}q${(Math.cos(a) * 18).toFixed(0)} ${(-10).toFixed(0)} ${(Math.cos(a) * 30).toFixed(0)} ${(Math.sin(a) * 26 + 8).toFixed(0)}`; } return d; };
+  const PAGES = [
+    `<p class="date">Lab 13</p><p>Property of</p><p>Dr. V. Frankenstein</p><p>Ingolstadt</p><p class="red">If found, DO NOT return.</p><p>(it knows the way back)</p>
+     <div class="ring"></div><span class="uv" style="left:40px;bottom:30px">don't read the last page</span>`,
+    `<p class="date">Oct 1</p><svg class="sketch" viewBox="0 0 100 90" aria-hidden="true"><path d="M50 22c-3-9 3-15 10-15" stroke="#2c6b2f" stroke-width="4" fill="none"/><ellipse cx="50" cy="55" rx="42" ry="31" fill="none" stroke="#c2621d" stroke-width="4"/><path d="M33 44l9 9H26zM67 44l-9 9h16zM28 64q22 16 44 0l-7 7-7-5-8 6-7-6-8 5z" fill="#c2621d"/></svg>
+     <p>Batch 11:</p><p>pumpkin + lightning</p><p>result: Jack-o'-lantern &#10003;</p><p>it laughs at night.</p><p><s>cute</s> not cute</p>
+     <span class="uv" style="left:60px;bottom:40px">it's still laughing</span>`,
+    `<p class="date">Oct 6</p><svg class="sketch" viewBox="0 0 100 100" aria-hidden="true"><path d="${legs(13)}" stroke="#1f2b5c" stroke-width="2.5" fill="none"/><ellipse cx="50" cy="50" rx="17" ry="13" fill="#1f2b5c"/></svg>
+     <p>Batch 12:</p><p>goal: one small spider</p><p>counted 11 legs.</p><p>counted again: 13.</p><p class="red">too many legs</p><p>it's under the bench now</p>
+     <span class="uv" style="left:70px;bottom:26px">it's not under the bench</span>`,
+    `<p class="date">Oct 13</p><svg class="sketch" viewBox="0 0 100 100" aria-hidden="true"><path d="M40 12h20M45 12v28L22 86h56L55 40V12" fill="none" stroke="#1f2b5c" stroke-width="4"/><path d="M30 70h40" stroke="#3aa05a" stroke-width="4"/><path d="M50 4l-4-4M62 6l6-5M36 6l-7-4M72 18l9-2M26 18l-9-3" stroke="#9a1c1c" stroke-width="3"/></svg>
+     <p>Batch 13:</p><p class="red">UNSTABLE</p><p>do NOT stir</p><p><s>stirred it</s></p><p>yield: 1 (escaped)</p><p>eyebrows: gone</p><p>subject escaped Tuesday</p>
+     <span class="uv" style="left:50px;bottom:14px">it's wearing my eyebrows</span>`,
+    `<p class="date">Oct 20</p><p>Specimen jars</p><p>the eyes follow me.</p><p>moved the jars.</p><p>they still follow me.</p><p>DO NOT FEED</p><p>(who fed them??)</p><p>order more jars. <span class="circle">BIGGER JARS</span></p>
+     <div class="ring" style="bottom:auto;top:30px"></div><span class="uv" style="left:56px;bottom:22px">they blink when you don't</span>`,
+    `<p class="date">Oct 24</p><p>Element 99:</p><p>Candycornium (Cc)</p><p class="red">highly unstable</p><p>do not eat</p><p><s>ate some</s></p><p>tastes like wax and regret</p><p>try lightning again??</p>
+     <span class="uv" style="left:90px;bottom:30px">Cc + lightning = ???</span>`,
+    `<p class="date">glued in</p><p>found this page in great-great-grandfather's desk:</p>
+     <div class="old">&ldquo;It was on a dreary night of November, that I beheld the accomplishment of my toils.&rdquo;<br>&mdash; Victor, 1818</div>
+     <p>family business, apparently.</p>
+     <span class="uv" style="left:60px;bottom:24px">he never finished. I will.</span>`,
+    `<p class="date">Oct 31</p><p>Batch 14:</p><p><span class="writes" data-text="the one holding the phone."></span></p>
+     <p class="after red">status: in progress</p><p class="after">note to self: more lightning</p>
+     <span class="uv" style="left:70px;bottom:40px;font-size:1.4em">turn around</span>`,
+  ];
+  const pagesEl = $("pages");
+  PAGES.forEach((html, i) => { const d = document.createElement("div"); d.className = "page"; d.style.zIndex = String(PAGES.length - i); d.innerHTML = html; pagesEl.appendChild(d); });
+  const pageEls = [...pagesEl.children], writesEl = pagesEl.querySelector(".writes");
+  let cur = 0, bookOpen = false, wrote = false, writing = null, ghostAfterBook = false;
+  function showPage(n) {
+    cur = Math.max(0, Math.min(PAGES.length - 1, n));
+    pageEls.forEach((p, i) => { p.classList.toggle("turned", i < cur); p.setAttribute("aria-hidden", String(i !== cur)); });
+    $("pgnum").textContent = `page ${cur + 1} of ${PAGES.length}`; $("prev").disabled = cur === 0; $("next").disabled = cur === PAGES.length - 1;
+    if (cur === PAGES.length - 1) setTimeout(writeLast, 800);
+  }
+  function turn(d) { const n = Math.max(0, Math.min(PAGES.length - 1, cur + d)); if (n !== cur) { play("page"); showPage(n); } }
+  function writeLast() {                   // the last line writes itself, one letter at a time
+    if (wrote || writing || !bookOpen || cur !== PAGES.length - 1) return;
+    const text = writesEl.dataset.text, start = performance.now(); let k = 0; writesEl.textContent = "";
+    writing = setInterval(() => {                          // paced by the clock, so a busy phone can't slow the handwriting
+      const n = Math.min(text.length, Math.floor((performance.now() - start) / 110));
+      if (n === k) return; if (Math.floor(n / 2) !== Math.floor(k / 2)) play("scratch"); k = n; writesEl.textContent = text.slice(0, k);
+      if (k >= text.length) { clearInterval(writing); writing = null; wrote = true; writesEl.classList.add("done");
+        pagesEl.querySelectorAll(".after").forEach(a => a.classList.add("shown")); }
+    }, 40);
+  }
+  function openBook() {
+    bookOpen = true; document.body.classList.add("reading"); $("book").classList.remove("hidden"); $("book").classList.toggle("uvon", uvOn);
+    play("page"); showPage(cur);
+  }
+  function closeBook() {
+    if (!bookOpen) return; bookOpen = false; document.body.classList.remove("reading"); $("book").classList.add("hidden"); play("page");
+    if (writing) { clearInterval(writing); writing = null; writesEl.textContent = ""; }
+    if (wrote && !ghostAfterBook) { ghostAfterBook = true; lastGhost = lab._t || 0; lab.summonGhost(lastGhost); showCaption("did you hear something?", 3.5); }
+  }
+  function resetBook() {
+    if (writing) { clearInterval(writing); writing = null; }
+    bookOpen = false; document.body.classList.remove("reading"); $("book").classList.add("hidden"); cur = 0; wrote = false; ghostAfterBook = false;
+    writesEl.textContent = ""; writesEl.classList.remove("done"); pagesEl.querySelectorAll(".after").forEach(a => a.classList.remove("shown"));
+  }
+  lab.events.openBook = openBook;
+  $("closebook").addEventListener("click", closeBook);
+  $("prev").addEventListener("click", () => turn(-1));
+  $("next").addEventListener("click", () => turn(1));
+  let swipe = null;
+  pagesEl.addEventListener("pointerdown", e => { swipe = { x: e.clientX, y: e.clientY }; });
+  pagesEl.addEventListener("pointerup", e => {
+    if (!swipe) return; const dx = e.clientX - swipe.x, dy = e.clientY - swipe.y; swipe = null;
+    if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy)) turn(dx < 0 ? 1 : -1);                 // swipe
+    else if (Math.abs(dx) < 12 && Math.abs(dy) < 12) {                                             // tap: right side forward, left edge back
+      const r = pagesEl.getBoundingClientRect(); turn(e.clientX > r.left + r.width * 0.3 ? 1 : -1); }
   });
+  addEventListener("keydown", e => { if (!bookOpen) return;
+    if (e.key === "ArrowRight") turn(1); else if (e.key === "ArrowLeft") turn(-1); else if (e.key === "Escape") closeBook(); });
   $("mute").addEventListener("click", () => { muted = !muted; if (master) master.gain.value = muted ? 0 : 0.9; $("mute").textContent = muted ? "sound off" : "sound on"; });
   let capUntil = 0;
   function showCaption(text, secs) { $("caption").textContent = text; $("caption").classList.add("on"); capUntil = clock + secs; }
@@ -955,7 +1093,7 @@ function buildLab(T, scene, opts = {}) {
     // the thing behind you: stands still until you look at it, then lunges
     const L = lab.lurker;
     if (L) {
-      const active = !lurk.done && (exploring ? (eCycle >= 10 && eCycle < 40) : (running && lt >= TL.lurkFrom && lt < TL.lurkUntil));
+      const active = !lurk.done && !bookOpen && (exploring ? (eCycle >= 10 && eCycle < 40) : (running && lt >= TL.lurkFrom && lt < TL.lurkUntil));
       if (active && lurk.lunging < 0) {
         L.visible = true; L.position.set(0.3, 0, 2.3); L.rotation.y = Math.PI;       // ~2 m behind where you first faced
         const a = Math.min(1, lurkAge / 2); L.userData.body.opacity = 0.85 * a; L.userData.eyes.opacity = a;
@@ -989,7 +1127,7 @@ function buildLab(T, scene, opts = {}) {
 
     lab._t = (lab._t || 0) + dt; lab.update(lab._t, dt, camera);
     renderer.clear(); renderer.render(bgScene, bgCam); renderer.render(scene, camera);
-    if (DEBUG) { $("dbg").style.display = "block"; $("dbg").textContent = `rev 3  t ${lt.toFixed(1)}  orient ${haveOrient}  cam ${bgMat.uniforms.has.value}  eye ${EYE}  tap ${tapInfo}`; }
+    if (DEBUG) { $("dbg").style.display = "block"; $("dbg").textContent = `rev 4  t ${lt.toFixed(1)}  orient ${haveOrient}  cam ${bgMat.uniforms.has.value}  eye ${EYE}  tap ${tapInfo}`; }
   });
 })();
 </script>
