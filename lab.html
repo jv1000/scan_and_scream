@@ -34,6 +34,9 @@
   .card .tape { font-size: 26px; }
   .card .row { display: flex; gap: 14px; flex-wrap: wrap; justify-content: center; }
   .hidden { display: none !important; }
+  #zoom { position: fixed; right: 12px; bottom: calc(96px + env(safe-area-inset-bottom, 0px)); font-size: 20px; transform: rotate(-2deg); display: none; }
+  #uvbtn { position: fixed; left: 12px; bottom: calc(96px + env(safe-area-inset-bottom, 0px)); font-size: 20px; transform: rotate(2deg); display: none; background: #d9ccf7; }
+  #uvbtn[aria-pressed="true"] { background: var(--uv); color: #fff; box-shadow: 0 0 18px var(--uv); }
   #dbg { position: fixed; left: 8px; bottom: 8px; font: 12px monospace; color: #0f0; background: #000a; padding: 3px 6px; display: none; }
 </style>
 </head>
@@ -43,6 +46,8 @@
 <div id="caption"></div>
 <button id="mute" class="tape" aria-pressed="false">sound on</button>
 <button id="recenter" class="tape">face the lab</button>
+<button id="zoom" class="tape" aria-label="Reset zoom">1×</button>
+<button id="uvbtn" class="tape" aria-pressed="false">UV lamp: off</button>
 <div id="door" class="card">
   <div class="sign">Lab 13</div>
   <p>Authorized personnel only. Stand where you have room to turn around.</p>
@@ -52,6 +57,7 @@
   <div class="sign">Lab 13 is closed</div>
   <p>Please leave the way you came. Don't take anything with you.</p>
   <div class="row">
+    <button id="explore" class="tape">Keep exploring</button>
     <button id="again" class="tape">Run it again</button>
     <a id="selfie" class="tape" href="https://jv1000.github.io/scan_and_scream/spider.html?mode=lab">Mad Lab selfie</a>
   </div>
@@ -484,9 +490,15 @@ function buildLab(T, scene, opts = {}) {
   const EYE = parseFloat(P.get("eye") || "1.3");          // phone height above the floor, meters
   const DEBUG = P.has("debug");
   // ---- 30-second timeline (seconds) ----
-  const TL = { power: 0.3, flat: 12, ghost: 14.5, lurkFrom: 7, lurkUntil: 24, boom: 20, uv: 23.5, outro: 28 };
-  const CAPTIONS = [[0.6, 4, "the lights are coming on..."], [5, 10, "something in here is still bubbling"], [12, 14.5, "someone's heart just stopped"],
-                    [16.5, 19.3, "don't turn around..."], [19.3, 21, "it's going to blow!"], [23.8, 27.5, "switch on the UV lamp... read the wall"]];
+  const QUICK = P.has("quick");                            // ?quick = the 30-second party version
+  const TL = QUICK ? { power: 0.3, flat: 12, ghost: 14.5, lurkFrom: 7, lurkUntil: 24, boom: 20, uv: 23.5, outro: 28 }
+                   : { power: 0.3, flat: 22, ghost: 28, lurkFrom: 12, lurkUntil: 48, boom: 40, uv: 47, outro: 57 };
+  const CAPTIONS = QUICK
+    ? [[0.6, 4, "the lights are coming on..."], [5, 10, "something in here is still bubbling"], [12, 14.5, "someone's heart just stopped"],
+       [16.5, 19.3, "don't turn around..."], [19.3, 21, "it's going to blow!"], [23.8, 27.5, "switch on the UV lamp... read the wall"]]
+    : [[0.6, 4, "the lights are coming on..."], [5, 11, "something in here is still bubbling"], [14, 19, "pinch to zoom in... read the notebook"],
+       [22, 25.5, "someone's heart just stopped"], [32, 36.5, "don't turn around..."], [38.2, 41, "it's going to blow!"],
+       [47.3, 52.5, "switch on the UV lamp... read the wall"]];
 
   if (!window.THREE) { $("door").querySelector("p").textContent = "The 3D engine didn't load. Check your connection and reload."; return; }
   const canvas = $("scene");
@@ -499,12 +511,13 @@ function buildLab(T, scene, opts = {}) {
   const video = $("cam");
   const vtex = new T.VideoTexture(video); vtex.minFilter = T.LinearFilter; vtex.magFilter = T.LinearFilter;
   const bgMat = new T.ShaderMaterial({
-    uniforms: { map: { value: vtex }, has: { value: 0 }, scale: { value: new T.Vector2(1, 1) }, offset: { value: new T.Vector2(0, 0) },
+    uniforms: { map: { value: vtex }, has: { value: 0 }, zoom: { value: 1 }, scale: { value: new T.Vector2(1, 1) }, offset: { value: new T.Vector2(0, 0) },
                 dark: { value: 0.35 }, uv: { value: 0 }, flash: { value: 0 }, flashCol: { value: new T.Color(0.6, 1.0, 0.5) } },
     vertexShader: "varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }",
-    fragmentShader: `uniform sampler2D map; uniform float has, dark, uv, flash; uniform vec2 scale, offset; uniform vec3 flashCol; varying vec2 vUv;
+    fragmentShader: `uniform sampler2D map; uniform float has, dark, uv, flash, zoom; uniform vec2 scale, offset; uniform vec3 flashCol; varying vec2 vUv;
       void main(){
-        vec3 c = has > 0.5 ? texture2D(map, vUv * scale + offset).rgb : vec3(0.05, 0.07, 0.06);
+        vec2 zv = (vUv - 0.5) / zoom + 0.5;
+        vec3 c = has > 0.5 ? texture2D(map, zv * scale + offset).rgb : vec3(0.05, 0.07, 0.06);
         float l = dot(c, vec3(0.299, 0.587, 0.114));
         vec3 g = mix(l * vec3(0.72, 0.92, 0.78), l * vec3(0.55, 0.33, 1.0), uv);
         float vig = smoothstep(1.2, 0.3, length(vUv - 0.5) * 1.7);
@@ -540,6 +553,33 @@ function buildLab(T, scene, opts = {}) {
     pivot.rotation.y = Math.atan2(-f.x, -f.z); facedLab = true; facedWithOrient = haveOrient;
   }
   $("recenter").addEventListener("click", faceLab);
+
+  // ---- zoom: pinch (two fingers) or double-tap; the room and the lab zoom together ----
+  let zoom = 1, zoomGoal = 1, baseFov = 64, pinch = null, lastTap = 0;
+  const ZMAX = 4, clampZ = z => Math.min(ZMAX, Math.max(1, z));
+  const fingerGap = e => Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+  canvas.addEventListener("touchstart", e => {
+    if (e.touches.length === 2) { pinch = { d: fingerGap(e), z: zoomGoal }; dragging = null; e.preventDefault(); }
+    else if (e.touches.length === 1) {
+      const now = performance.now();
+      if (now - lastTap < 300) { zoomGoal = zoomGoal > 1.2 ? 1 : 2.5; lastTap = 0; e.preventDefault(); } else lastTap = now;
+    }
+  }, { passive: false });
+  canvas.addEventListener("touchmove", e => {
+    if (pinch && e.touches.length === 2) { zoomGoal = clampZ(pinch.z * fingerGap(e) / pinch.d); e.preventDefault(); }
+  }, { passive: false });
+  canvas.addEventListener("touchend", e => { if (e.touches.length < 2) pinch = null; });
+  canvas.addEventListener("wheel", e => { zoomGoal = clampZ(zoomGoal * Math.exp(-e.deltaY * 0.002)); e.preventDefault(); }, { passive: false });   // laptop testing
+  $("zoom").addEventListener("click", () => { zoomGoal = 1; });
+  function applyZoom(dt) {
+    zoom += (zoomGoal - zoom) * Math.min(1, dt * 12);
+    if (Math.abs(zoom - zoomGoal) < 0.002) zoom = zoomGoal;
+    const f = 2 * Math.atan(Math.tan(T.MathUtils.degToRad(baseFov) / 2) / zoom);
+    const deg = T.MathUtils.radToDeg(f);
+    if (Math.abs(camera.fov - deg) > 1e-3) { camera.fov = deg; camera.updateProjectionMatrix(); }
+    bgMat.uniforms.zoom.value = zoom;
+    const z = $("zoom"); z.style.display = zoomGoal > 1.05 && running ? "block" : "none"; z.textContent = zoomGoal.toFixed(1) + "×";
+  }
 
   // ---- sound (all synthesized) ----
   let ac = null, master = null, noiseBuf = null, flatOsc = null, muted = false;
@@ -589,9 +629,11 @@ function buildLab(T, scene, opts = {}) {
 
   // ---- run state ----
   let running = false, t0 = 0, clock = 0, fired = {}, lurk = { done: false, lunging: -1 }, flash = 0;
+  let exploring = false, exploreStart = 0, lastGhost = 0, prevECycle = -1, uvOn = false;
   function begin() {
     lab.reset(); lab.setPower(false); lab.setUV(false); fired = {}; lurk = { done: false, lunging: -1 };
     $("outro").classList.add("hidden"); t0 = clock; running = true; facedLab = false;
+    exploring = false; uvOn = false; $("uvbtn").style.display = "none"; $("uvbtn").setAttribute("aria-pressed", "false"); $("uvbtn").textContent = "UV lamp: off";
   }
   $("enter").addEventListener("click", async () => {
     startAudio(); play("click");
@@ -602,23 +644,33 @@ function buildLab(T, scene, opts = {}) {
     begin();
   });
   $("again").addEventListener("click", () => { play("click"); begin(); });
+  $("explore").addEventListener("click", () => {          // lights back on, flask whole again, no timer
+    play("click"); lab.reset(); lab.setPower(true); lab.setUV(false); lab.setFlat(null);
+    running = false; exploring = true; exploreStart = clock; lastGhost = lab._t || 0; prevECycle = -1; lurk = { done: false, lunging: -1 };
+    $("outro").classList.add("hidden"); $("uvbtn").style.display = "block"; $("caption").classList.remove("on");
+  });
+  $("uvbtn").addEventListener("click", () => {
+    uvOn = !uvOn; lab.setUV(uvOn); play("click");
+    $("uvbtn").setAttribute("aria-pressed", String(uvOn)); $("uvbtn").textContent = uvOn ? "UV lamp: on" : "UV lamp: off";
+  });
   $("mute").addEventListener("click", () => { muted = !muted; if (master) master.gain.value = muted ? 0 : 0.9; $("mute").textContent = muted ? "sound off" : "sound on"; });
   let capUntil = 0;
   function showCaption(text, secs) { $("caption").textContent = text; $("caption").classList.add("on"); capUntil = clock + secs; }
 
-  function resize() { const w = innerWidth, h = innerHeight; renderer.setSize(w, h, false); camera.aspect = w / h; camera.fov = w < h ? 64 : 50; camera.updateProjectionMatrix(); fitVideo(); }
+  function resize() { const w = innerWidth, h = innerHeight; renderer.setSize(w, h, false); camera.aspect = w / h; baseFov = w < h ? 64 : 50; camera.fov = baseFov; camera.updateProjectionMatrix(); fitVideo(); }
   addEventListener("resize", resize); video.addEventListener("loadedmetadata", resize); resize();
 
   const clk = new T.Clock(), tmp = new T.Vector3(), fwd = new T.Vector3();
   renderer.setAnimationLoop(() => {
     const dt = Math.min(0.05, clk.getDelta()); clock += dt;
     // look direction
-    if (haveOrient && orient) { orientTarget(); camera.quaternion.slerp(target, 0.35); }
+    if (haveOrient && orient) { orientTarget(); camera.quaternion.slerp(target, 0.35 / Math.sqrt(zoom)); }
     else camera.quaternion.setFromEuler(new T.Euler(dragPitch, dragYaw, 0, "YXZ"));
     // line the lab up with where you're pointing, once the motion reading has settled (or after 1.5 s with no motion sensor)
     const settled = haveOrient && performance.now() / 1000 - firstOrientAt > 0.4;
     if (running && (!facedLab || (settled && !facedWithOrient)) && (settled || (!haveOrient && clock - t0 > 1.5))) faceLab();
 
+    applyZoom(dt);
     const lt = running ? clock - t0 : 0;
     const hit = at => running && !fired[at] && lt >= at && (fired[at] = true);
     if (hit(TL.power)) lab.setPower(true);
@@ -628,13 +680,18 @@ function buildLab(T, scene, opts = {}) {
     if (hit(TL.uv)) { lab.setUV(true); play("click"); }
     if (hit(TL.outro)) { $("outro").classList.remove("hidden"); lab.setFlat(null); if (flatOsc) { flatOsc.stop(); flatOsc = null; } }
 
+    if (exploring && (lab._t || 0) - lastGhost > 30) { lastGhost = lab._t; lab.summonGhost(lab._t); }
+    const eCycle = exploring ? (clock - exploreStart) % 45 : -1;
+    if (exploring && eCycle < prevECycle) lurk = { done: false, lunging: -1 };
+    prevECycle = eCycle;
+    const lurkAge = exploring ? eCycle - 10 : lt - TL.lurkFrom;
     // the thing behind you: stands still until you look at it, then lunges
     const L = lab.lurker;
     if (L) {
-      const active = running && lt >= TL.lurkFrom && lt < TL.lurkUntil && !lurk.done;
+      const active = !lurk.done && (exploring ? (eCycle >= 10 && eCycle < 40) : (running && lt >= TL.lurkFrom && lt < TL.lurkUntil));
       if (active && lurk.lunging < 0) {
         L.visible = true; L.position.set(0.3, 0, 2.3); L.rotation.y = Math.PI;       // ~2 m behind where you first faced
-        const a = Math.min(1, (lt - TL.lurkFrom) / 2); L.userData.body.opacity = 0.85 * a; L.userData.eyes.opacity = a;
+        const a = Math.min(1, lurkAge / 2); L.userData.body.opacity = 0.85 * a; L.userData.eyes.opacity = a;
         L.getWorldPosition(tmp); tmp.y += 1.2; fwd.set(0, 0, -1).applyQuaternion(camera.quaternion);
         const look = fwd.dot(tmp.sub(camera.position).normalize());
         if (look > 0.85 && a > 0.5) { lurk.lunging = clock; play("shriek"); flash = 0.9; bgMat.uniforms.flashCol.value.setRGB(1.0, 0.15, 0.1); }
@@ -653,13 +710,14 @@ function buildLab(T, scene, opts = {}) {
     else if (!cap && clock >= capUntil) $("caption").classList.remove("on");
 
     // background grading: dim before power, flicker with the tube, violet under UV, flashes
-    const powered = running && lt >= TL.power;
+    const powered = exploring || (running && lt >= TL.power);
     let dark = powered ? 0.82 : 0.3;
-    if (powered && lt < TL.power + 1.3) dark = Math.random() < 0.45 ? 0.15 : 0.82;
+    if (powered && !exploring && lt < TL.power + 1.3) dark = Math.random() < 0.45 ? 0.15 : 0.82;
     if (clock < flickerUntil) dark = Math.random() < 0.45 ? 0.12 : dark;
-    if (running && lt >= TL.outro) dark *= Math.max(0.15, 1 - (lt - TL.outro));
+    if (running && !exploring && lt >= TL.outro) dark *= Math.max(0.15, 1 - (lt - TL.outro));
     bgMat.uniforms.dark.value = dark;
-    bgMat.uniforms.uv.value += (((running && lt >= TL.uv) ? 1 : 0) - bgMat.uniforms.uv.value) * Math.min(1, dt * 4);
+    const uvTarget = exploring ? (uvOn ? 1 : 0) : ((running && lt >= TL.uv) ? 1 : 0);
+    bgMat.uniforms.uv.value += (uvTarget - bgMat.uniforms.uv.value) * Math.min(1, dt * 4);
     flash = Math.max(0, flash - dt * 1.6); bgMat.uniforms.flash.value = flash;
 
     lab._t = (lab._t || 0) + dt; lab.update(lab._t, dt, camera);
