@@ -37,6 +37,9 @@
   #zoom { position: fixed; right: 12px; bottom: calc(96px + env(safe-area-inset-bottom, 0px)); font-size: 20px; transform: rotate(-2deg); display: none; }
   #uvbtn { position: fixed; left: 12px; bottom: calc(96px + env(safe-area-inset-bottom, 0px)); font-size: 20px; transform: rotate(2deg); display: none; background: #d9ccf7; }
   #uvbtn[aria-pressed="true"] { background: var(--uv); color: #fff; box-shadow: 0 0 18px var(--uv); }
+  #putback { position: fixed; left: 50%; bottom: calc(150px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%) rotate(-1.5deg); font-size: 22px; display: none; }
+  #reticle { position: fixed; left: 50%; top: 50%; width: 26px; height: 26px; margin: -13px 0 0 -13px; border: 2px dashed rgba(233,255,224,0.8);
+             border-radius: 50%; pointer-events: none; display: none; box-shadow: 0 0 6px #000, inset 0 0 6px #000; }
   #dbg { position: fixed; left: 8px; bottom: 8px; font: 12px monospace; color: #0f0; background: #000a; padding: 3px 6px; display: none; }
 </style>
 </head>
@@ -48,6 +51,8 @@
 <button id="recenter" class="tape">face the lab</button>
 <button id="zoom" class="tape" aria-label="Reset zoom">1×</button>
 <button id="uvbtn" class="tape" aria-pressed="false">UV lamp: off</button>
+<button id="putback" class="tape">Put it back</button>
+<div id="reticle"></div>
 <div id="door" class="card">
   <div class="sign">Lab 13</div>
   <p>Authorized personnel only. Stand where you have room to turn around.</p>
@@ -165,24 +170,37 @@ function buildLab(T, scene, opts = {}) {
       outline = [[0, 0], [r, 0], [r, h]]; inner = [[0, 0.004], [r - 0.005, 0.004], [r - 0.005, h * fill], [0, h * fill]]; }
     const v2 = a => a.map(([px, py]) => new T.Vector2(px, py));
     g.add(new T.Mesh(new T.LatheGeometry(v2(outline), 32), glassMat));
+    // pourable glassware: the liquid runs up to the rim and a level plane in world space cuts it off,
+    // so the surface stays flat when you tilt the glass, and the fill can change
+    let pour = null;
+    if (opts.pour) {
+      const flask = kind === "flask", r = opts.r || (flask ? 0.09 : 0.07), hEff = flask ? 0.17 : (opts.h || 0.16), rimH = flask ? 0.24 : (opts.h || 0.16);
+      inner = flask ? [[0, 0.004], [r - 0.005, 0.004], [r - 0.005, 0.012], [0.024, 0.17], [0.024, rimH - 0.004], [0, rimH - 0.004]]
+                    : [[0, 0.004], [r - 0.004, 0.004], [r - 0.004, rimH - 0.002], [0, rimH - 0.002]];
+      pour = { key: opts.pour, flask, fill, fill0: fill, r, rimH, hEff, lipR: flask ? 0.03 : r * 1.05, maxFill: (rimH - 0.008) / hEff,
+               cap: r * r * hEff * (flask ? 0.55 : 1), plane: new T.Plane(new T.Vector3(0, -1, 0), 0), color0: new T.Color(color), glow0: opts.glow || 0.5,
+               boost: 1, s: new T.Vector3(), sv: new T.Vector3(), prevA: null };
+    }
     const lmat = new T.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: opts.glow || 0.5, roughness: 0.25, transparent: true, opacity: opts.opacity || 0.85 });
+    if (pour) { lmat.clippingPlanes = [pour.plane]; lmat.side = T.DoubleSide; }
     const liquid = new T.Mesh(new T.LatheGeometry(v2(inner), 32), lmat); g.add(liquid);
     if (kind === "jar") { const lid = new T.Mesh(new T.CylinderGeometry((opts.r || 0.1) * 1.05, (opts.r || 0.1) * 1.05, 0.03, 32), std(0x2d2a26, { metalness: 0.6, roughness: 0.4 })); lid.position.y = (opts.h || 0.26) + 0.015; g.add(lid); }
     if (opts.uv) uvLiquids.push({ mat: lmat, base: opts.glow || 0.5 });
     // bubbles
     const topY = inner[inner.length - 1][1], bubbles = [];
     const bm = new T.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.6 });
+    if (pour) bm.clippingPlanes = [pour.plane];
     const n = opts.bubbles === undefined ? 5 : opts.bubbles;
     for (let i = 0; i < n; i++) { const b = new T.Mesh(new T.SphereGeometry(0.004, 6, 5), bm); b.userData = { y: rand(0, topY), a: rand(0, 6.3), r: rand(0, 0.025), v: rand(0.04, 0.09) * (opts.boil || 1) }; g.add(b); bubbles.push(b); }
-    updaters.push((t, dt) => { for (const b of bubbles) { const u = b.userData; u.y += u.v * dt; if (u.y > topY) { u.y = 0.01; u.a = rand(0, 6.3); u.r = rand(0, 0.025); } b.position.set(Math.cos(u.a) * u.r, u.y, Math.sin(u.a) * u.r); } });
-    return { group: g, liquid: lmat, topY };
+    updaters.push((t, dt) => { for (const b of bubbles) { const u = b.userData; u.y += u.v * dt * (pour ? pour.boost : 1); if (u.y > topY) { u.y = 0.01; u.a = rand(0, 6.3); u.r = rand(0, 0.025); } b.position.set(Math.cos(u.a) * u.r, u.y, Math.sin(u.a) * u.r); } });
+    return { group: g, liquid: lmat, topY, pour };
   }
 
   // ---------------- WET LAB ----------------
-  vessel(wet, "beaker", -0.75, 0.12, 0x7fd6ff, 0.75, { uv: true, glow: 0.35 });          // tonic water
-  vessel(wet, "flask", -0.45, -0.1, 0x8dff4a, 0.6, { uv: true, glow: 0.45 });            // highlighter ink
-  vessel(wet, "beaker", -0.15, 0.18, 0x7a0a10, 0.8, { r: 0.05, h: 0.13, glow: 0.2, opacity: 0.95 });   // don't ask
-  const dry = vessel(wet, "beaker", 0.2, 0.05, 0xdfe7ee, 0.5, { r: 0.09, h: 0.18, glow: 0.3, boil: 3, bubbles: 10 });  // dry ice
+  const tonic = vessel(wet, "beaker", -0.75, 0.12, 0x7fd6ff, 0.75, { uv: true, glow: 0.35, pour: "tonic" });          // tonic water
+  const ink = vessel(wet, "flask", -0.45, -0.1, 0x8dff4a, 0.6, { uv: true, glow: 0.45, pour: "ink" });            // highlighter ink
+  const red = vessel(wet, "beaker", -0.15, 0.18, 0x7a0a10, 0.8, { r: 0.05, h: 0.13, glow: 0.2, opacity: 0.95, pour: "red" });   // don't ask
+  const dry = vessel(wet, "beaker", 0.2, 0.05, 0xdfe7ee, 0.5, { r: 0.09, h: 0.18, glow: 0.3, boil: 3, bubbles: 10, pour: "dry" });  // dry ice
   // specimen jars with eyeballs that watch you
   const eyeTex = canvasTex(256, 128, (g, w, h) => {
     g.fillStyle = "#f2ece2"; g.fillRect(0, 0, w, h);
@@ -194,14 +212,17 @@ function buildLab(T, scene, opts = {}) {
     g.fillStyle = "#050505"; g.beginPath(); g.ellipse(cx, cy, 8, 10, 0, 0, 7); g.fill();
   });
   const eyeMat = std(0xffffff, { map: eyeTex.tex, roughness: 0.3, emissive: 0x222222, emissiveMap: eyeTex.tex, emissiveIntensity: 0.15 });
-  const eyes = [];
+  const eyes = [], jars = [];
   for (const [jx, jz, n] of [[0.55, -0.12, 3], [0.8, 0.14, 2]]) {
     const jar = vessel(wet, "jar", jx, jz, 0xc9d86a, 0.85, { r: 0.1, h: 0.26, glow: 0.15, opacity: 0.45, bubbles: 2 });
+    const jarEyes = [];
     for (let i = 0; i < n; i++) {
       const e = new T.Mesh(new T.SphereGeometry(0.03, 20, 14), eyeMat);
-      e.userData = { base: new T.Vector3(rand(-0.04, 0.04), rand(0.05, 0.17), rand(-0.04, 0.04)), ph: rand(0, 6.3) };
-      jar.group.add(e); eyes.push(e);
+      e.userData = { base: new T.Vector3(rand(-0.04, 0.04), rand(0.05, 0.17), rand(-0.04, 0.04)), ph: rand(0, 6.3),
+                     off: new T.Vector3(), vel: new T.Vector3(), axis: new T.Vector3(0, 1, 0), w: 0, settle: 0 };
+      jar.group.add(e); eyes.push(e); jarEyes.push(e);
     }
+    jars.push({ kind: "jar", group: jar.group, eyes: jarEyes, wobbleAt: -1e9 });
   }
   const label = (text, sub, w = 0.26, h = 0.1) => {
     const c = canvasTex(512, 200, (g, W, H) => {
@@ -212,20 +233,38 @@ function buildLab(T, scene, opts = {}) {
     return new T.Mesh(new T.PlaneGeometry(w, h), std(0xffffff, { map: c.tex, roughness: 0.9 }));
   };
   const lab13 = label("Specimen 13", "DO NOT FEED"); lab13.position.set(0.62, 1.07, 0.3); lab13.rotation.x = -0.9; wet.add(lab13);
+  const eyeP = new T.Vector3(), eyeW = new T.Vector3(), eyeQ = new T.Quaternion(), eyeGoal = new T.Quaternion();
   updaters.push((t, dt, cam) => {
+    for (const jr of jars) {                // a rattled jar rocks on its base and settles
+      const s = t - jr.wobbleAt, k = s < 2.5 ? Math.exp(-2.4 * s) : 0;
+      jr.group.rotation.z = 0.13 * k * Math.sin(19 * s); jr.group.rotation.x = 0.09 * k * Math.sin(16 * s + 1);
+    }
     for (const e of eyes) { const u = e.userData;
-      e.position.copy(u.base).add(new T.Vector3(Math.sin(t * 0.7 + u.ph) * 0.01, Math.sin(t * 0.9 + u.ph) * 0.015, 0));
-      e.lookAt(cam.position); }          // they follow you
+      // thick liquid: a soft spring pulls each eye home, drag slows it, the glass stops it
+      u.vel.addScaledVector(u.off, -38 * dt).multiplyScalar(Math.exp(-2.2 * dt)); u.off.addScaledVector(u.vel, dt);
+      eyeP.copy(u.base).add(u.off);
+      const rr = Math.hypot(eyeP.x, eyeP.z);
+      if (rr > 0.062) { const nx = eyeP.x / rr, nz = eyeP.z / rr, vn = u.vel.x * nx + u.vel.z * nz;
+        eyeP.x = nx * 0.062; eyeP.z = nz * 0.062; if (vn > 0) { u.vel.x -= 1.6 * vn * nx; u.vel.z -= 1.6 * vn * nz; } }
+      if (eyeP.y < 0.035) { eyeP.y = 0.035; if (u.vel.y < 0) u.vel.y *= -0.5; }
+      if (eyeP.y > 0.2) { eyeP.y = 0.2; if (u.vel.y > 0) u.vel.y *= -0.5; }
+      u.off.copy(eyeP).sub(u.base);
+      e.position.copy(eyeP).add(eyeW.set(Math.sin(t * 0.7 + u.ph) * 0.01, Math.sin(t * 0.9 + u.ph) * 0.015, 0));
+      if (u.w > 0.4) { e.rotateOnAxis(u.axis, u.w * dt); u.w *= Math.exp(-1.1 * dt); u.settle = 1.2; }     // tumbling
+      else if (u.settle > 0) { u.settle -= dt; eyeQ.copy(e.quaternion); e.lookAt(cam.position); eyeGoal.copy(e.quaternion);
+        e.quaternion.copy(eyeQ).slerp(eyeGoal, Math.min(1, dt * 3)); }                                        // ...and finding you again
+      else e.lookAt(cam.position);          // they follow you
+    }
   });
   // dry-ice fog rolling over the bench and pooling on the floor
   const fogTex = canvasTex(128, 128, (g, w) => { const c = g.createRadialGradient(64, 64, 0, 64, 64, 64); c.addColorStop(0, "rgba(235,245,240,0.9)"); c.addColorStop(1, "rgba(235,245,240,0)"); g.fillStyle = c; g.fillRect(0, 0, w, w); });
   const fogMat = new T.SpriteMaterial({ map: fogTex.tex, transparent: true, opacity: 0.35, depthWrite: false });
   const fogs = [], fogOrigin = new T.Vector3();
   for (let i = 0; i < 55; i++) { const s = new T.Sprite(fogMat.clone()); s.visible = false; s.userData = { alive: false }; scene.add(s); fogs.push(s); }
-  let fogClock = 0;
+  let fogClock = 0, fogBoostUntil = -1;
   updaters.push((t, dt) => {
     fogClock += dt;
-    if (fogClock > 0.09) { fogClock = 0;
+    if (fogClock > (t < fogBoostUntil ? 0.015 : 0.09)) { fogClock = 0;
       const s = fogs.find(f => !f.userData.alive);
       if (s) { dry.group.getWorldPosition(fogOrigin); if (scene.worldToLocal) scene.worldToLocal(fogOrigin);
         s.userData = { alive: true, born: t, life: rand(6, 9), p: fogOrigin.clone().add(new T.Vector3(0, dry.topY + 0.03, 0)),
@@ -469,12 +508,200 @@ function buildLab(T, scene, opts = {}) {
     lurker.visible = false; scene.add(lurker);
   }
 
+
+  // ---------------- things you can touch (Keep exploring) ----------------
+  // tap a jar to rattle the eyeballs; tap glassware to pick it up; tilt the phone to pour; aim to fill another glass; shake to fizz
+  const fire = (n, a) => { if (events[n]) events[n](a); }, say = text => fire("say", text);
+  const pickOne = a => a[Math.floor(Math.random() * a.length)];
+  const hitMat = new T.MeshBasicMaterial({ visible: false });     // generous invisible tap targets, since glassware is tiny on a phone
+  const touchables = [];
+  function touchable(entry, r, h) { const p = new T.Mesh(new T.CylinderGeometry(r, r, h, 10), hitMat); p.position.y = h / 2;
+    p.userData.touch = entry; entry.group.add(p); entry.proxy = p; touchables.push(entry); return entry; }
+  for (const jr of jars) touchable(jr, 0.17, 0.42);
+  const glasses = [tonic, ink, red, dry].map(v => {
+    const uvE = uvLiquids.find(l => l.mat === v.liquid);
+    return touchable({ kind: "glass", group: v.group, v, p: v.pour, uvE, uvBase0: uvE ? uvE.base : 0,
+                       home: { pos: v.group.position.clone(), quat: v.group.quaternion.clone() } }, v.pour.r + 0.07, v.pour.rimH + 0.12);
+  });
+  const JAR_LINES = ["they don't like being shaken", "one of them just winked", "now they're all staring at you", "DO NOT FEED. do not shake, either."];
+  const GLOWCOL = new T.Color(0x7dffd8);
+
+  const V3 = () => new T.Vector3(), UP = new T.Vector3(0, 1, 0), DOWN = new T.Vector3(0, -1, 0);
+  const _b = V3(), _a = V3(), _p = V3(), _d = V3(), _l = V3(), _n = V3(), _w = V3(), _u = V3(), _f = V3(), _t2 = V3(), _j = V3();
+  const _q = new T.Quaternion(), _wq = new T.Quaternion(), _pq = new T.Quaternion(), _hq = new T.Quaternion();
+  const ray = new T.Raycaster();
+  function closestHit(entries) {     // tap zones overlap, so pick the thing whose centre is nearest your line of sight, not the nearest zone
+    const hits = ray.intersectObjects(entries.map(e => e.proxy), false); let best = null, bd = Infinity;
+    for (const h of hits) { const e = h.object.userData.touch; e.group.getWorldPosition(_t2); _t2.y += (e.p ? e.p.rimH : 0.26) / 2;
+      const d = ray.ray.distanceSqToPoint(_t2); if (d < bd) { bd = d; best = e; } }
+    return best;
+  }
+
+  function glassFrame(gl) {          // base point, axis, and the centre of the liquid surface, in world space
+    gl.group.updateWorldMatrix(true, false);
+    gl.group.getWorldPosition(_b); _a.copy(UP).applyQuaternion(gl.group.getWorldQuaternion(_q));
+    _p.copy(_b).addScaledVector(_a, gl.p.fill * gl.p.hEff);
+  }
+  function levelPlane(gl, dt) {      // keep the surface level, with a little slosh when the glass moves suddenly
+    const p = gl.p; glassFrame(gl);
+    if (!p.prevA) p.prevA = _a.clone();
+    _d.copy(_a).sub(p.prevA); p.prevA.copy(_a); _d.y = 0;
+    p.sv.addScaledVector(_d, -6).addScaledVector(p.s, -70 * dt).multiplyScalar(Math.exp(-3.5 * dt));
+    p.s.addScaledVector(p.sv, dt); p.s.y = 0; if (p.s.length() > 0.3) p.s.setLength(0.3);
+    _n.set(p.s.x, -1, p.s.z).normalize(); p.plane.setFromNormalAndCoplanarPoint(_n, _p);
+  }
+
+  // ---- eyeball jars ----
+  function jostle(jr, t) { jr.wobbleAt = t;
+    for (const e of jr.eyes) { const u = e.userData, a = rand(0, 6.3), sp = rand(0.35, 0.7);
+      u.vel.set(Math.cos(a) * sp, rand(0.3, 0.8), Math.sin(a) * sp); u.axis.set(rand(-1, 1), rand(-1, 1), rand(-1, 1)).normalize(); u.w = rand(9, 16); } }
+
+  // ---- holding a glass ----
+  let held = null, carry = 0, spawnT = 0, lastT = 0, jolt = 0, fizzT = 0, fizzSnd = 0, fizzing = false, mixedOnce = false, trickleT = 0;
+  const HOLD = new T.Vector3(0.04, -0.11, -0.42);          // low and just in front of the phone
+  function holdPose(cam) {           // upright, except for the phone's roll, which tips the glass
+    _w.copy(HOLD).applyQuaternion(cam.quaternion).add(cam.position);
+    _u.set(0, 1, 0).applyQuaternion(cam.quaternion); _f.set(0, 0, -1).applyQuaternion(cam.quaternion); _f.y = 0;
+    if (_f.lengthSq() > 1e-4) { _f.normalize(); _u.addScaledVector(_f, -_u.dot(_f)); }
+    if (_u.lengthSq() < 1e-4) _u.set(0, 1, 0);
+    _wq.setFromUnitVectors(UP, _u.normalize());
+  }
+  function setWorld(g, pos, quat) { const par = g.parent; par.updateWorldMatrix(true, false);
+    g.position.copy(pos); par.worldToLocal(g.position); par.getWorldQuaternion(_pq); g.quaternion.copy(_pq.invert().multiply(quat)); }
+  function pick(gl, t) { if (held) putBack();
+    held = { gl, at: t, from: gl.group.getWorldPosition(V3()), fromQ: gl.group.getWorldQuaternion(new T.Quaternion()) };
+    gl.returning = null; jolt = 0; }
+  function putBack() { if (!held) return; const gl = held.gl;
+    gl.returning = { at: lastT, pos: gl.group.position.clone(), quat: gl.group.quaternion.clone() }; gl.p.boost = 1; held = null; }
+  function aimAt(cam) {              // the glass in the middle of the screen, if any
+    ray.set(cam.position, _f.set(0, 0, -1).applyQuaternion(cam.quaternion));
+    return closestHit(glasses.filter(g => g !== held.gl && !g.gone));
+  }
+
+  // ---- pouring: drops fly out over the lowest point of the rim ----
+  const drops = [], dropGeo = new T.SphereGeometry(0.007, 6, 5);
+  for (let i = 0; i < 90; i++) { const m = new T.Mesh(dropGeo, new T.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, toneMapped: false }));
+    m.visible = false; m.userData = { alive: false, p: V3(), v: V3() }; scene.add(m); drops.push(m); }
+  function launch(gl, lip, dir, tgt, t, up) {
+    const d = drops.find(x => !x.userData.alive); if (!d) return; const u = d.userData;
+    u.alive = true; u.born = t; u.src = gl; u.vol = carry; carry = 0; u.tgt = tgt;
+    u.p.copy(lip).add(_j.set(rand(-0.004, 0.004), 0, rand(-0.004, 0.004)));
+    d.material.color.copy(gl.v.liquid.color); if (up) d.material.color.lerp(new T.Color(0xffffff), 0.5);
+    if (tgt) { tgt.group.getWorldPosition(_t2); _t2.y += tgt.p.rimH + 0.01;
+      const T0 = 0.35 + 0.18 * u.p.distanceTo(_t2);                  // a ballistic arc that lands in the other glass
+      u.v.copy(_t2).sub(u.p).divideScalar(T0); u.v.y += 4.9 * T0; u.arrive = t + T0; }
+    else if (up) { u.v.copy(dir).multiplyScalar(rand(0.6, 1.1)).add(_j.set(rand(-0.15, 0.15), 0, rand(-0.15, 0.15))); u.arrive = Infinity; }
+    else { u.v.copy(dir).multiplyScalar(0.3); u.arrive = Infinity; }
+  }
+  function pourFrom(gl, t, dt, tgt) {
+    const p = gl.p;
+    _d.copy(DOWN).addScaledVector(_a, _a.y);            // "downhill" across the rim
+    if (_d.lengthSq() < 1e-6) return false; _d.normalize();
+    _l.copy(_b).addScaledVector(_a, p.rimH).addScaledVector(_d, p.lipR);
+    const tilt = Math.acos(Math.min(1, Math.max(-1, _a.y)));
+    const over = p.flask ? (tilt - 1.0) * 0.08 : _p.y - _l.y;       // a flask's narrow neck needs a steeper tip
+    if (over <= 0) return false;
+    if (p.fill <= 0.02) { if (!gl.saidEmpty) { gl.saidEmpty = true; say("empty... every last drop"); } return false; }
+    const df = Math.min(p.fill, Math.min(1, over / 0.02) * 0.5 * dt); p.fill -= df; carry += df * p.cap;
+    spawnT -= dt; if (spawnT <= 0) { spawnT = 1 / 40; launch(gl, _l, _d, tgt, t, false); }
+    if (t - trickleT > 0.09) { trickleT = t; fire("trickle"); }
+    return true;
+  }
+  function glowUp(gl) {
+    let e = uvLiquids.find(l => l.mat === gl.v.liquid);
+    if (!e) { e = { mat: gl.v.liquid, base: gl.p.glow0 }; uvLiquids.push(e); gl.addedUV = e; }
+    e.base = Math.min(1.5, e.base * 1.5 + 0.15); gl.v.liquid.emissive.lerp(GLOWCOL, 0.5);
+  }
+  function puff(pos, t, n, spread) { let k = 0;
+    for (const sp of smokes) { if (sp.userData.alive) continue; if (k++ >= n) break;
+      const a = rand(0, 6.3), s2 = rand(0.1, spread);
+      sp.userData = { alive: true, born: t, life: rand(1.2, 2.4), p: pos.clone(), v: new T.Vector3(Math.cos(a) * s2, rand(0.2, 0.7), Math.sin(a) * s2) }; sp.visible = true; } }
+  function react(src, tgt, t) {
+    if (t - (tgt.reactAt || -9) < 5) return; tgt.reactAt = t;
+    const keys = [src.p.key, tgt.p.key];
+    if (keys.includes("red")) { tgt.group.getWorldPosition(_t2); _t2.y += tgt.p.rimH; scene.worldToLocal(_t2); puff(_t2, t, 10, 0.4);
+      fire("hiss"); say(pickOne(["that was a mistake", "it's hissing at you", "now you know why it says don't ask"])); }
+    else if (tgt.p.key === "dry") { fogBoostUntil = t + 4; fire("fizz"); say("the dry ice did not like that. watch your feet"); }
+    else if (keys.includes("tonic") && keys.includes("ink")) { glowUp(tgt); fire("bubble"); say("now it glows... try the UV lamp"); }
+    else { fire("bubble"); if (!mixedOnce) say("mixing... what could go wrong?"); }
+    mixedOnce = true;
+  }
+  function land(src, tgt, vol, t) {
+    const p = tgt.p, room = Math.max(0, p.maxFill - p.fill) * p.cap, into = Math.min(vol, room);
+    if (into > 0) { const w = into / (p.fill * p.cap + into); p.fill += into / p.cap;
+      tgt.v.liquid.color.lerp(src.v.liquid.color, w); tgt.v.liquid.emissive.lerp(src.v.liquid.emissive, w); tgt.saidEmpty = false; }
+    if (vol - into > 1e-7 && t - (tgt.spillAt || -9) > 3) { tgt.spillAt = t; say("it's overflowing!"); fire("splat"); }
+    react(src, tgt, t);
+  }
+  function foam(gl, t) {             // shaken, it froths up out of the top
+    glassFrame(gl); if (gl.p.fill <= 0.02) return;
+    const df = Math.min(gl.p.fill, 0.01); gl.p.fill -= df; carry = df * gl.p.cap;
+    _l.copy(_b).addScaledVector(_a, gl.p.rimH); launch(gl, _l, _a, null, t, true);
+  }
+  function blow(gl, t) {
+    glassFrame(gl); const w = _b.clone().addScaledVector(_a, 0.08); scene.worldToLocal(w); puff(w, t, 26, 1.0);
+    fire("boom"); say("...oops. eyebrows: gone"); held = null; jolt = 0; fizzing = false;
+    gl.gone = t + 4; gl.group.visible = false;
+  }
+  function restore(gl) {
+    const p = gl.p; gl.group.position.copy(gl.home.pos); gl.group.quaternion.copy(gl.home.quat); gl.group.visible = true;
+    p.fill = p.fill0; p.boost = 1; p.s.set(0, 0, 0); p.sv.set(0, 0, 0); p.prevA = null;
+    gl.v.liquid.color.copy(p.color0); gl.v.liquid.emissive.copy(p.color0);
+    if (gl.uvE) gl.uvE.base = gl.uvBase0;
+    if (gl.addedUV) { uvLiquids.splice(uvLiquids.indexOf(gl.addedUV), 1); gl.addedUV = null; gl.v.liquid.emissiveIntensity = p.glow0; }
+    gl.returning = null; gl.gone = null; gl.saidEmpty = false; gl.reactAt = null; gl.spillAt = null;
+  }
+  function resetTouch() {
+    held = null; carry = 0; jolt = 0; fizzing = false; mixedOnce = false; fogBoostUntil = -1;
+    for (const gl of glasses) restore(gl);
+    for (const d of drops) { d.userData.alive = false; d.visible = false; }
+    for (const jr of jars) { jr.wobbleAt = -1e9; jr.group.rotation.set(0, 0, 0); }
+    for (const e of eyes) { const u = e.userData; u.off.set(0, 0, 0); u.vel.set(0, 0, 0); u.w = 0; u.settle = 0; }
+  }
+
+  updaters.push((t, dt, cam) => {
+    lastT = t;
+    if (held) { const gl = held.gl, k = smooth((t - held.at) / 0.45);
+      holdPose(cam); _w.lerpVectors(held.from, _w, k); _hq.copy(held.fromQ).slerp(_wq, k); setWorld(gl.group, _w, _hq); }
+    for (const gl of glasses) {
+      if (gl.gone && t > gl.gone) { restore(gl); say("someone replaced it. who?"); }
+      if (gl.returning) { const k = smooth((t - gl.returning.at) / 0.5);
+        gl.group.position.lerpVectors(gl.returning.pos, gl.home.pos, k); gl.group.quaternion.copy(gl.returning.quat).slerp(gl.home.quat, k);
+        if (k >= 1) gl.returning = null; }
+      levelPlane(gl, dt);
+      if (held && held.gl === gl && t - held.at > 0.5) pourFrom(gl, t, dt, aimAt(cam));
+    }
+    // shaking the glass in your hand
+    jolt = Math.max(0, jolt - dt * 1.3);
+    if (held) { const gl = held.gl; gl.p.boost = 1 + jolt * 3;
+      if (jolt > 2.5 && t - fizzT > 0.05) { fizzT = t; foam(gl, t);
+        if (!fizzing) { fizzing = true; say("it's fizzing... keep shaking?"); }
+        if (t - fizzSnd > 0.9) { fizzSnd = t; fire("fizz"); } }
+      if (jolt < 1.5) fizzing = false;
+      if (jolt > 8) blow(gl, t);
+    }
+    for (const d of drops) { const u = d.userData; if (!u.alive) continue;
+      u.v.y -= 9.8 * dt; u.p.addScaledVector(u.v, dt);
+      if (u.tgt && t >= u.arrive) { u.alive = false; d.visible = false; if (!u.tgt.gone) land(u.src, u.tgt, u.vol, t); continue; }
+      if (u.p.y < 0.01 || t - u.born > 3) { u.alive = false; d.visible = false; if (!u.tgt && Math.random() < 0.15) fire("splat"); continue; }
+      d.visible = true; d.position.copy(u.p); scene.worldToLocal(d.position);
+    }
+  });
+
+  function tap(ndc, cam) {
+    cam.updateMatrixWorld(); ray.setFromCamera(ndc, cam);
+    const e = closestHit(touchables.filter(e => !e.gone && !(held && held.gl === e))); if (!e) return null;
+    if (e.kind === "jar") { jostle(e, lastT); fire("clink"); fire("squish"); say(pickOne(JAR_LINES)); return "jar"; }
+    pick(e, lastT); fire("clink"); say("tilt your phone to pour... aim the circle at another glass"); return "glass";
+  }
+
   return {
-    events, lurker,
+    events, lurker, tap, putBack, shake() { if (held) jolt += 1; }, holding: () => !!held,
+    _touch: { glasses, jars, eyes, drops, get held() { return held; }, get jolt() { return jolt; } },
     setFlat(v) { flatOverride = v; },
     summonGhost(t) { ghostStart = t; ghostWhispered = false; },
     explode,
-    reset() { rbf.visible = cond.visible = coil.visible = true; flatOverride = null; labUV = false; ghostStart = opts.manualGhost ? -1e9 : ghostStart;
+    reset() { resetTouch(); rbf.visible = cond.visible = coil.visible = true; flatOverride = null; labUV = false; ghostStart = opts.manualGhost ? -1e9 : ghostStart;
       boomAt = -1e9; mantle.material.emissiveIntensity = 0.6; for (const sp of smokes) { sp.userData.alive = false; sp.visible = false; } },
     setUV(on) { labUV = on; },
     setPower(on) { power = on ? 1 : 0; },
@@ -506,6 +733,7 @@ function buildLab(T, scene, opts = {}) {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.outputEncoding = T.sRGBEncoding; renderer.toneMapping = T.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.15;
   renderer.autoClear = false;
+  renderer.localClippingEnabled = true;     // pourable liquid is cut by a level plane
 
   // ---- camera feed as a graded background (one shader: grey-green, flicker, UV violet, flash) ----
   const video = $("cam");
@@ -559,7 +787,7 @@ function buildLab(T, scene, opts = {}) {
   const ZMAX = 4, clampZ = z => Math.min(ZMAX, Math.max(1, z));
   const fingerGap = e => Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
   canvas.addEventListener("touchstart", e => {
-    if (e.touches.length === 2) { pinch = { d: fingerGap(e), z: zoomGoal }; dragging = null; e.preventDefault(); }
+    if (e.touches.length === 2) { pinch = { d: fingerGap(e), z: zoomGoal }; dragging = null; tapStart = null; e.preventDefault(); }
     else if (e.touches.length === 1) {
       const now = performance.now();
       if (now - lastTap < 300) { zoomGoal = zoomGoal > 1.2 ? 1 : 2.5; lastTap = 0; e.preventDefault(); } else lastTap = now;
@@ -571,6 +799,25 @@ function buildLab(T, scene, opts = {}) {
   canvas.addEventListener("touchend", e => { if (e.touches.length < 2) pinch = null; });
   canvas.addEventListener("wheel", e => { zoomGoal = clampZ(zoomGoal * Math.exp(-e.deltaY * 0.002)); e.preventDefault(); }, { passive: false });   // laptop testing
   $("zoom").addEventListener("click", () => { zoomGoal = 1; });
+
+  // ---- touching the lab (Keep exploring only): a quick tap on a jar or a glass ----
+  let tapStart = null; const ndc = new T.Vector2();
+  canvas.addEventListener("pointerdown", e => { tapStart = e.isPrimary ? { x: e.clientX, y: e.clientY, t: performance.now() } : null; });
+  canvas.addEventListener("pointerup", e => {
+    const s = tapStart; tapStart = null;
+    if (!s || !e.isPrimary || !exploring || pinch) return;
+    if (Math.hypot(e.clientX - s.x, e.clientY - s.y) > 14 || performance.now() - s.t > 450) return;
+    const r = canvas.getBoundingClientRect(); ndc.set((e.clientX - r.left) / r.width * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+    if (lab.tap(ndc, camera)) lastTap = 0;           // a tap on a thing isn't half of a double-tap zoom
+  });
+  $("putback").addEventListener("click", () => { lab.putBack(); play("clink"); });
+  // shaking: a hard jolt from the motion sensor
+  let lastJolt = 0;
+  window.addEventListener("devicemotion", e => {
+    const a = e.acceleration, g = e.accelerationIncludingGravity; let m = 0;
+    if (a && a.x !== null) m = Math.hypot(a.x, a.y, a.z); else if (g && g.x !== null) m = Math.abs(Math.hypot(g.x, g.y, g.z) - 9.81);
+    if (m > 13 && exploring && clock - lastJolt > 0.12) { lastJolt = clock; lab.shake(); }
+  });
   function applyZoom(dt) {
     zoom += (zoomGoal - zoom) * Math.min(1, dt * 12);
     if (Math.abs(zoom - zoomGoal) < 0.002) zoom = zoomGoal;
@@ -605,11 +852,20 @@ function buildLab(T, scene, opts = {}) {
       for (let i = 0; i < 12; i++) noise(t + 0.05 + Math.random() * 0.7, "highpass", 3000 + Math.random() * 3000, 1, 0.12, 0.002, 0.01, 0.05); },   // + glass tinkling down
     shriek() { const t = ac.currentTime; [1, 1.33, 1.5].forEach(k => tone(t, "sawtooth", 950 * k, 380 * k, 0.12, 0.02, 0.25, 0.5)); noise(t, "bandpass", 2500, 2, 0.4, 0.01, 0.3, 0.5); },
     click() { noise(ac.currentTime, "bandpass", 2500, 3, 0.3, 0.002, 0.01, 0.04); },
+    clink() { const t = ac.currentTime; tone(t, "sine", 2400, 2300, 0.09, 0.002, 0.02, 0.35); tone(t, "sine", 3700, 3600, 0.05, 0.002, 0.01, 0.25); },
+    squish() { const t = ac.currentTime, f = noise(t + 0.05, "lowpass", 900, 4, 0.25, 0.01, 0.08, 0.2); f.frequency.setValueAtTime(900, t + 0.05); f.frequency.exponentialRampToValueAtTime(200, t + 0.35); },
+    trickle() { noise(ac.currentTime, "bandpass", 600 + Math.random() * 900, 8, 0.12, 0.004, 0.02, 0.06); },
+    hiss() { noise(ac.currentTime, "highpass", 4000, 0.7, 0.25, 0.05, 0.8, 0.9); },
+    fizz() { const t = ac.currentTime; for (let i = 0; i < 14; i++) noise(t + Math.random() * 0.9, "highpass", 5000 + Math.random() * 3000, 1, 0.08, 0.002, 0.005, 0.03); },
+    splat() { noise(ac.currentTime, "lowpass", 700, 1, 0.12, 0.003, 0.02, 0.12); },
   };
   const play = n => { if (on()) try { SFX[n](); } catch (e) {} };
   lab.events.beep = () => play("beep"); lab.events.bubble = () => play("bubble"); lab.events.whisper = () => play("whisper");
   let flickerUntil = 0;
   lab.events.crackle = () => { play("crackle"); flickerUntil = clock + 0.7; };
+  lab.events.say = text => showCaption(text, 3.6);
+  for (const n of ["clink", "squish", "trickle", "hiss", "fizz", "splat", "bubble"]) lab.events[n] = () => play(n);
+  lab.events.boom = () => { play("boom"); flash = 1; bgMat.uniforms.flashCol.value.setRGB(0.6, 1.0, 0.5); };
   lab.events.flatline = (start) => { if (!ac) return;
     if (start && !flatOsc) { const o = ac.createOscillator(), g = ac.createGain(); o.frequency.value = 1050; g.gain.value = muted ? 0 : 0.05; o.connect(g); g.connect(master); o.start(); flatOsc = o; }
     if (!start && flatOsc) { flatOsc.stop(); flatOsc = null; } };
@@ -638,6 +894,7 @@ function buildLab(T, scene, opts = {}) {
   $("enter").addEventListener("click", async () => {
     startAudio(); play("click");
     try { if (window.DeviceOrientationEvent && typeof DeviceOrientationEvent.requestPermission === "function") await DeviceOrientationEvent.requestPermission(); } catch (e) {}
+    try { if (window.DeviceMotionEvent && typeof DeviceMotionEvent.requestPermission === "function") await DeviceMotionEvent.requestPermission(); } catch (e) {}
     const cam = await startCamera();
     $("door").classList.add("hidden"); $("recenter").style.display = "block"; $("mute").style.display = "block";
     if (!cam) showCaption("no camera: you're in the dark lab instead", 4);
@@ -648,6 +905,7 @@ function buildLab(T, scene, opts = {}) {
     play("click"); lab.reset(); lab.setPower(true); lab.setUV(false); lab.setFlat(null);
     running = false; exploring = true; exploreStart = clock; lastGhost = lab._t || 0; prevECycle = -1; lurk = { done: false, lunging: -1 };
     $("outro").classList.add("hidden"); $("uvbtn").style.display = "block"; $("caption").classList.remove("on");
+    showCaption("tap the jars and the glassware... some of them tap back", 5);
   });
   $("uvbtn").addEventListener("click", () => {
     uvOn = !uvOn; lab.setUV(uvOn); play("click");
@@ -660,7 +918,7 @@ function buildLab(T, scene, opts = {}) {
   function resize() { const w = innerWidth, h = innerHeight; renderer.setSize(w, h, false); camera.aspect = w / h; baseFov = w < h ? 64 : 50; camera.fov = baseFov; camera.updateProjectionMatrix(); fitVideo(); }
   addEventListener("resize", resize); video.addEventListener("loadedmetadata", resize); resize();
 
-  const clk = new T.Clock(), tmp = new T.Vector3(), fwd = new T.Vector3();
+  const clk = new T.Clock(), tmp = new T.Vector3(), fwd = new T.Vector3(); let wasHolding = false;
   renderer.setAnimationLoop(() => {
     const dt = Math.min(0.05, clk.getDelta()); clock += dt;
     // look direction
@@ -671,6 +929,8 @@ function buildLab(T, scene, opts = {}) {
     if (running && (!facedLab || (settled && !facedWithOrient)) && (settled || (!haveOrient && clock - t0 > 1.5))) faceLab();
 
     applyZoom(dt);
+    const holding = exploring && lab.holding();
+    if (holding !== wasHolding) { wasHolding = holding; $("putback").style.display = $("reticle").style.display = holding ? "block" : "none"; }
     const lt = running ? clock - t0 : 0;
     const hit = at => running && !fired[at] && lt >= at && (fired[at] = true);
     if (hit(TL.power)) lab.setPower(true);
