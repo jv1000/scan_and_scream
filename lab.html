@@ -30,6 +30,7 @@
   .card { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; text-align: center; padding: 24px;
           background: radial-gradient(ellipse at 50% 55%, rgba(7,9,11,0.45), rgba(7,9,11,0.94) 70%); }
   .card p { margin: 0; font-family: var(--type); color: #d6ddd8; font-size: 17px; max-width: 28ch; line-height: 1.55; }
+  .card p.rev { font-size: 13px; opacity: 0.5; margin-top: -10px; }
   .card .sign { font-family: var(--hand); font-size: 60px; color: var(--glow); text-shadow: 0 0 18px rgba(157,255,106,0.6); line-height: 1; }
   .card .tape { font-size: 26px; }
   .card .row { display: flex; gap: 14px; flex-wrap: wrap; justify-content: center; }
@@ -56,6 +57,7 @@
 <div id="door" class="card">
   <div class="sign">Lab 13</div>
   <p>Authorized personnel only. Stand where you have room to turn around.</p>
+  <p class="rev">revision 3</p>
   <button id="enter" class="tape">Flip the switch</button>
 </div>
 <div id="outro" class="card hidden">
@@ -558,7 +560,7 @@ function buildLab(T, scene, opts = {}) {
 
   // ---- holding a glass ----
   let held = null, carry = 0, spawnT = 0, lastT = 0, jolt = 0, fizzT = 0, fizzSnd = 0, fizzing = false, mixedOnce = false, trickleT = 0;
-  const HOLD = new T.Vector3(0.04, -0.11, -0.42);          // low and just in front of the phone
+  const HOLD = new T.Vector3(0.05, -0.15, -0.6);          // low and just in front of the phone
   function holdPose(cam) {           // upright, except for the phone's roll, which tips the glass
     _w.copy(HOLD).applyQuaternion(cam.quaternion).add(cam.position);
     _u.set(0, 1, 0).applyQuaternion(cam.quaternion); _f.set(0, 0, -1).applyQuaternion(cam.quaternion); _f.y = 0;
@@ -788,10 +790,6 @@ function buildLab(T, scene, opts = {}) {
   const fingerGap = e => Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
   canvas.addEventListener("touchstart", e => {
     if (e.touches.length === 2) { pinch = { d: fingerGap(e), z: zoomGoal }; dragging = null; tapStart = null; e.preventDefault(); }
-    else if (e.touches.length === 1) {
-      const now = performance.now();
-      if (now - lastTap < 300) { zoomGoal = zoomGoal > 1.2 ? 1 : 2.5; lastTap = 0; e.preventDefault(); } else lastTap = now;
-    }
   }, { passive: false });
   canvas.addEventListener("touchmove", e => {
     if (pinch && e.touches.length === 2) { zoomGoal = clampZ(pinch.z * fingerGap(e) / pinch.d); e.preventDefault(); }
@@ -803,12 +801,21 @@ function buildLab(T, scene, opts = {}) {
   // ---- touching the lab (Keep exploring only): a quick tap on a jar or a glass ----
   let tapStart = null; const ndc = new T.Vector2();
   canvas.addEventListener("pointerdown", e => { tapStart = e.isPrimary ? { x: e.clientX, y: e.clientY, t: performance.now() } : null; });
+  let tapInfo = "none";
   canvas.addEventListener("pointerup", e => {
     const s = tapStart; tapStart = null;
-    if (!s || !e.isPrimary || !exploring || pinch) return;
-    if (Math.hypot(e.clientX - s.x, e.clientY - s.y) > 14 || performance.now() - s.t > 450) return;
-    const r = canvas.getBoundingClientRect(); ndc.set((e.clientX - r.left) / r.width * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
-    if (lab.tap(ndc, camera)) lastTap = 0;           // a tap on a thing isn't half of a double-tap zoom
+    if (!s || !e.isPrimary || pinch) return;
+    if (Math.hypot(e.clientX - s.x, e.clientY - s.y) > 14 || performance.now() - s.t > 450) { tapInfo = "moved/held"; return; }
+    // first: did you tap a thing? (Keep exploring only)
+    if (exploring) {
+      const r = canvas.getBoundingClientRect(); ndc.set((e.clientX - r.left) / r.width * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+      const hit = lab.tap(ndc, camera); tapInfo = hit || "miss";
+      if (hit) { lastTap = 0; return; }                // a tap on a thing is never half of a double-tap zoom
+    }
+    // otherwise: double-tap empty space to zoom
+    if (e.pointerType !== "touch") return;
+    const now = performance.now();
+    if (now - lastTap < 300) { zoomGoal = zoomGoal > 1.2 ? 1 : 2.5; lastTap = 0; tapInfo = "zoom"; } else lastTap = now;
   });
   $("putback").addEventListener("click", () => { lab.putBack(); play("clink"); });
   // shaking: a hard jolt from the motion sensor
@@ -982,7 +989,7 @@ function buildLab(T, scene, opts = {}) {
 
     lab._t = (lab._t || 0) + dt; lab.update(lab._t, dt, camera);
     renderer.clear(); renderer.render(bgScene, bgCam); renderer.render(scene, camera);
-    if (DEBUG) { $("dbg").style.display = "block"; $("dbg").textContent = `t ${lt.toFixed(1)}  orient ${haveOrient}  cam ${bgMat.uniforms.has.value}  eye ${EYE}`; }
+    if (DEBUG) { $("dbg").style.display = "block"; $("dbg").textContent = `rev 3  t ${lt.toFixed(1)}  orient ${haveOrient}  cam ${bgMat.uniforms.has.value}  eye ${EYE}  tap ${tapInfo}`; }
   });
 })();
 </script>
